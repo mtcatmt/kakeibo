@@ -1,7 +1,7 @@
 // 帳簿の計算（画面に依存しない部分）。Node.js からも読み込んでテストできる。
 
-// データ形式の版。2：収益の「その他」を追加。3：NISA・評価差額・NISA積立を追加
-export const SCHEMA = 3;
+// データ形式の版。2：収益の「その他」を追加。3：NISA・評価差額・NISA積立を追加。4：収入・奨学金の自動入力を追加
+export const SCHEMA = 4;
 
 export const TYPE_LABEL = {
   asset: '資産',
@@ -43,11 +43,19 @@ export function daysSince(iso, now = new Date()) {
   return Math.floor((now.getTime() - new Date(iso).getTime()) / 86400000);
 }
 
+// 版4で加える収入・奨学金の自動入力（id, 名前, 借方, 貸方）
+const INCOME_RECURRING = [
+  ['r_job1', 'バイト①', 'bank', 'job1'],
+  ['r_job2', 'バイト②', 'bank', 'job2'],
+  ['r_grant', '奨学金（返済なし）', 'bank', 'grant_sch'],
+  ['r_loan', '奨学金（返済あり）', 'bank', 'loan_sch'],
+];
+
 export function defaultState() {
   const a = (id, name, type) => ({ id, name, type, archived: false });
-  const r = (id, name, debit = 'subsc') => ({
+  const r = (id, name, debit = 'subsc', credit = 'card') => ({
     id, name, amount: 0, freq: 'monthly', month: 1, day: 1,
-    debit, credit: 'card', startMonth: null, lastMonth: null, active: false,
+    debit, credit, startMonth: null, lastMonth: null, active: false,
   });
   return {
     schema: SCHEMA,
@@ -76,7 +84,7 @@ export function defaultState() {
       a('other_inc', 'その他', 'income'),
     ],
     entries: [],
-    recurring: [r('r_tel', '通信費'), r('r_claude', 'Claude'), r('r_prime', 'Amazon Prime'), r('r_nisa', 'NISA積立', 'nisa')],
+    recurring: [r('r_tel', '通信費'), r('r_claude', 'Claude'), r('r_prime', 'Amazon Prime'), r('r_nisa', 'NISA積立', 'nisa'), ...INCOME_RECURRING.map((x) => r(...x))],
     settings: { backupDays: 7, lastBackupAt: null, last: {} },
   };
 }
@@ -95,6 +103,13 @@ export function migrate(s) {
       if (!s.accounts.some((a) => a.id === id)) s.accounts.push({ ...def.find((a) => a.id === id) });
     }
     if (!s.recurring.some((x) => x.id === 'r_nisa')) s.recurring.push({ ...d.recurring.find((x) => x.id === 'r_nisa') });
+  }
+  // 版3→4：収入・奨学金の自動入力を1回だけ追加する（科目が残っているものだけ）
+  if (from < 4) {
+    const ids = new Set(s.accounts.map((a) => a.id));
+    for (const x of d.recurring.filter((x) => INCOME_RECURRING.some((y) => y[0] === x.id))) {
+      if (!s.recurring.some((y) => y.id === x.id) && ids.has(x.debit) && ids.has(x.credit)) s.recurring.push({ ...x });
+    }
   }
   s.schema = Math.max(from, SCHEMA);
   s.settings = { ...d.settings, ...(s.settings || {}) };
@@ -251,6 +266,19 @@ export const nextPeriod = (key, by) => (by === 'year' ? String(Number(key) + 1) 
 
 export function netWorthSeries(state, keys, by) {
   return keys.map((k) => netWorth(state, periodEnd(k, by)));
+}
+
+// 自動入力の種類。借方が費用なら支出、貸方が収益なら収入、それ以外（資産・負債の間の移動）は振替
+export const RECURRING_SIDES = {
+  expense: { debit: ['expense'], credit: ['asset', 'liability'] },
+  income: { debit: ['asset'], credit: ['income'] },
+  transfer: { debit: ['asset', 'liability'], credit: ['asset', 'liability'] },
+};
+export function recurringKind(r, accounts) {
+  const t = (id) => accounts.find((a) => a.id === id)?.type;
+  if (t(r.debit) === 'expense') return 'expense';
+  if (t(r.credit) === 'income') return 'income';
+  return 'transfer';
 }
 
 export function recurringDate(r, ym) {

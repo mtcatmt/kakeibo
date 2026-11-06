@@ -128,6 +128,37 @@ test('NISA：クレカ積立・評価額の更新・純資産・支出への影�
   assert.equal(L.buildValuationLines('nisa', 95000, 95000), null);
 });
 
+test('収入・奨学金の自動入力', () => {
+  const s = L.defaultState();
+  const job = s.recurring.find((r) => r.id === 'r_job1');
+  const loan = s.recurring.find((r) => r.id === 'r_loan');
+  assert.equal(L.recurringKind(job, s.accounts), 'income');
+  assert.equal(L.recurringKind(loan, s.accounts), 'transfer');
+  assert.equal(L.recurringKind(s.recurring.find((r) => r.id === 'r_tel'), s.accounts), 'expense');
+  assert.equal(L.recurringKind(s.recurring.find((r) => r.id === 'r_nisa'), s.accounts), 'transfer');
+  Object.assign(job, { amount: 60000, day: 25, startMonth: '2026-10', active: true });
+  Object.assign(loan, { amount: 30000, day: 11, startMonth: '2026-10', active: true });
+  L.generateRecurring(s, '2026-11-06');
+  const m = L.summarize(s, 'month');
+  assert.equal(m.get('2026-10').incomeTotal, 60000); // 給料は収入。貸与奨学金は収入に入らない
+  const bal = L.balances(s);
+  // 11月分は25日・11日がまだ来ていないので、10月分だけ
+  assert.equal(bal.bank, 60000 + 30000);
+  assert.equal(bal.loan_sch, 30000); // 返済あり：負債が増える
+  assert.equal(L.netWorth(s), 60000);
+});
+
+test('版3のデータを読み込むと収入・奨学金の自動入力が加わる', () => {
+  const s = L.defaultState();
+  s.schema = 3;
+  s.recurring = s.recurring.filter((r) => !['r_job1', 'r_job2', 'r_grant', 'r_loan'].includes(r.id));
+  s.accounts = s.accounts.filter((a) => a.id !== 'job2'); // 科目を削除していた場合は加えない
+  L.migrate(s);
+  const ids = s.recurring.map((r) => r.id);
+  assert.ok(ids.includes('r_job1') && ids.includes('r_grant') && ids.includes('r_loan'));
+  assert.ok(!ids.includes('r_job2'));
+});
+
 test('期間キーと金額の解析', () => {
   assert.deepEqual(L.periodKeysEnding('2026-02', 'month', 3), ['2025-12', '2026-01', '2026-02']);
   assert.deepEqual(L.periodKeysEnding('2026', 'year', 2), ['2025', '2026']);

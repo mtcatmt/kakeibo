@@ -1,7 +1,7 @@
 import * as L from './ledger.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -339,7 +339,7 @@ function startEdit(id) {
   const two = dr.length === 1 && cr.length === 1;
   let mode = 'journal';
   // 自動入力の仕訳は、借方が費用なら支出、資産（積立）なら振替の画面で開く
-  const k = e.kind === 'recurring' ? (acc(dr[0]?.acc)?.type === 'expense' ? 'expense' : 'transfer') : e.kind;
+  const k = e.kind === 'recurring' ? L.recurringKind({ debit: dr[0]?.acc, credit: cr[0]?.acc }, state.accounts) : e.kind;
   if (two && ['expense', 'income', 'transfer'].includes(k)) mode = k;
   ui.mode = mode;
   ui.editingId = id;
@@ -613,10 +613,11 @@ function viewSettings() {
   const st = state.settings;
   const days = L.daysSince(st.lastBackupAt);
   const freqText = (r) => (r.freq === 'yearly' ? `毎年${r.month}月${r.day}日` : `毎月${r.day}日`);
-  const recurring = state.recurring
+  const recurring = [...state.recurring]
+    .sort((a, b) => Number(b.active) - Number(a.active))
     .map(
       (r) => `<li><button type="button" class="entry" data-act="rec-edit" data-id="${r.id}">
-        <span class="entry-main"><span class="entry-title">${esc(r.name)}${r.active ? '' : '<span class="badge off">停止中</span>'}</span>
+        <span class="entry-main"><span class="entry-title">${esc(r.name)}<span class="badge">${REC_KIND[L.recurringKind(r, state.accounts)].label}</span>${r.active ? '' : '<span class="badge off">停止中</span>'}</span>
         <span class="entry-sub">${freqText(r)}　借方 ${esc(accName(r.debit))} ／ 貸方 ${esc(accName(r.credit))}</span></span>
         <span class="entry-amt">${r.amount ? yen(r.amount) : '金額未設定'}</span></button></li>`,
     )
@@ -666,8 +667,8 @@ function viewSettings() {
     </section>
 
     <section class="card">
-      <h2>固定費・積立</h2>
-      <p class="hint">アプリを開いたときに、期日を過ぎた分の仕訳を自動で作ります。NISAのクレカ積立は「借方 NISA（投資信託）／貸方 クレジットカード」で、支出には数えられません。</p>
+      <h2>自動入力（固定費・積立・収入）</h2>
+      <p class="hint">毎月・毎年決まった日の入出金を登録すると、アプリを開いたときに、期日を過ぎた分の仕訳を自動で作ります。金額がその月だけ違った場合は、履歴からその仕訳を編集してください。</p>
       <ul class="entries">${recurring}</ul>
       <button type="button" class="ghost" data-act="rec-add">追加</button>
     </section>
@@ -699,15 +700,25 @@ function viewSettings() {
     </section>`;
 }
 
+// 自動入力の種類ごとの、借方・貸方の欄の名前と、作られる仕訳の説明
+const REC_KIND = {
+  expense: { label: '支出', debit: '借方：費用の科目', credit: '貸方：支払元', note: '例：通信費・サブスクリプション' },
+  income: { label: '収入', debit: '借方：入金先', credit: '貸方：収益の科目', note: '例：バイトの給料、奨学金（返済なし）' },
+  transfer: { label: '振替', debit: '借方：移動先', credit: '貸方：移動元', note: '例：NISA積立（移動元 クレジットカード → 移動先 NISA）、奨学金（返済あり）（移動元 奨学金（返済あり） → 移動先 銀行口座）' },
+};
+
 function recurringForm(r) {
   const isNew = !r;
   r = r || {
     id: L.uid(), name: '', amount: 0, freq: 'monthly', month: 1, day: 1,
     debit: 'subsc', credit: 'card', startMonth: L.monthOf(today()), lastMonth: null, active: true,
   };
+  const kind = L.recurringKind(r, state.accounts);
   openSheet(`
-    <h2>${isNew ? '固定費の追加' : '固定費の編集'}</h2>
+    <h2>${isNew ? '自動入力の追加' : '自動入力の編集'}</h2>
     <form id="rec-form" data-id="${r.id}" data-new="${isNew}">
+      <div class="seg" id="rec-kind">${Object.entries(REC_KIND).map(([k, v]) => `<button type="button" data-kind="${k}" class="${k === kind ? 'on' : ''}">${v.label}</button>`).join('')}</div>
+      <p class="hint" id="rec-note"></p>
       <label class="field"><span class="field-label">名前</span><input name="name" value="${esc(r.name)}" required></label>
       <label class="field"><span class="field-label">金額</span><input name="amount" inputmode="numeric" value="${r.amount || ''}" placeholder="0"></label>
       <div class="row2">
@@ -716,8 +727,9 @@ function recurringForm(r) {
         <label class="field"><span class="field-label">日</span><select name="day">${Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}"${i + 1 === Number(r.day) ? ' selected' : ''}>${i + 1}日</option>`).join('')}</select></label>
       </div>
       <p class="hint">月の日数より大きい日（例：31日）は、その月の末日になります。</p>
-      <label class="field"><span class="field-label">借方（費用の科目、または積立先の資産）</span><select name="debit">${accountOptions(r.debit, ['expense', 'asset'])}</select></label>
-      <label class="field"><span class="field-label">貸方（支払元）</span><select name="credit">${accountOptions(r.credit, ['asset', 'liability'])}</select></label>
+      <label class="field"><span class="field-label" id="rec-debit-label"></span><select name="debit"></select></label>
+      <label class="field"><span class="field-label" id="rec-credit-label"></span><select name="credit"></select></label>
+      <p class="preview" id="rec-preview"></p>
       <label class="field"><span class="field-label">開始月</span><input name="startMonth" type="month" value="${esc(r.startMonth || L.monthOf(today()))}"></label>
       ${r.lastMonth ? `<p class="hint">${monthLabel(r.lastMonth)}分まで作成済み</p>` : ''}
       <label class="check"><input type="checkbox" name="active"${r.active || !r.amount ? ' checked' : ''}> 自動入力する</label>
@@ -730,6 +742,35 @@ function recurringForm(r) {
   const form = $('#rec-form');
   const f = form.elements;
   f.freq.addEventListener('change', () => ($('#rec-month-field').hidden = f.freq.value !== 'yearly'));
+  let curKind = kind;
+  // 種類に合わせて借方・貸方の選択肢を入れ替える。今の選択が新しい種類でも使えるなら残す
+  const setKind = (k) => {
+    curKind = k;
+    const sides = L.RECURRING_SIDES[k];
+    const keep = (id, types) => (types.includes(acc(id)?.type) ? id : '');
+    const d = keep(f.debit.value || r.debit, sides.debit);
+    const c = keep(f.credit.value || r.credit, sides.credit);
+    f.debit.innerHTML = accountOptions(d, sides.debit);
+    f.credit.innerHTML = accountOptions(c, sides.credit);
+    $('#rec-debit-label').textContent = REC_KIND[k].debit;
+    $('#rec-credit-label').textContent = REC_KIND[k].credit;
+    $('#rec-note').textContent = REC_KIND[k].note;
+    form.querySelectorAll('#rec-kind button').forEach((b) => b.classList.toggle('on', b.dataset.kind === k));
+    updateRecPreview();
+  };
+  const updateRecPreview = () => {
+    const amount = L.parseAmount(f.amount.value);
+    $('#rec-preview').textContent =
+      f.debit.value && f.credit.value && amount
+        ? '作られる仕訳：' + linesText([{ acc: f.debit.value, side: 'dr', amount }, { acc: f.credit.value, side: 'cr', amount }])
+        : '';
+  };
+  form.querySelectorAll('#rec-kind button').forEach((b) => b.addEventListener('click', () => setKind(b.dataset.kind)));
+  form.addEventListener('input', updateRecPreview);
+  form.addEventListener('change', updateRecPreview);
+  f.debit.innerHTML = accountOptions(r.debit, L.RECURRING_SIDES[kind].debit);
+  f.credit.innerHTML = accountOptions(r.credit, L.RECURRING_SIDES[kind].credit);
+  setKind(kind);
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const amount = L.parseAmount(f.amount.value);
@@ -737,6 +778,7 @@ function recurringForm(r) {
     if (!f.name.value.trim()) return toast('名前を入力してください');
     if (active && !amount) return toast('自動入力するには金額が必要です');
     if (!f.debit.value || !f.credit.value) return toast('借方と貸方の科目を選んでください');
+    if (f.debit.value === f.credit.value) return toast('借方と貸方に同じ科目は選べません');
     if (!/^\d{4}-\d{2}$/.test(f.startMonth.value)) return toast('開始月を入力してください');
     const data = {
       name: f.name.value.trim(),
