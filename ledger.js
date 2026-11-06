@@ -1,7 +1,7 @@
 // 帳簿の計算（画面に依存しない部分）。Node.js からも読み込んでテストできる。
 
-// データ形式の版。2：収益の「その他」を追加
-export const SCHEMA = 2;
+// データ形式の版。2：収益の「その他」を追加。3：NISA・評価差額・NISA積立を追加
+export const SCHEMA = 3;
 
 export const TYPE_LABEL = {
   asset: '資産',
@@ -45,9 +45,9 @@ export function daysSince(iso, now = new Date()) {
 
 export function defaultState() {
   const a = (id, name, type) => ({ id, name, type, archived: false });
-  const r = (id, name) => ({
+  const r = (id, name, debit = 'subsc') => ({
     id, name, amount: 0, freq: 'monthly', month: 1, day: 1,
-    debit: 'subsc', credit: 'card', startMonth: null, lastMonth: null, active: false,
+    debit, credit: 'card', startMonth: null, lastMonth: null, active: false,
   });
   return {
     schema: SCHEMA,
@@ -55,9 +55,11 @@ export function defaultState() {
       a('cash', '現金', 'asset'),
       a('bank', '銀行口座', 'asset'),
       a('emoney', '電子マネー', 'asset'),
+      a('nisa', 'NISA（投資信託）', 'asset'),
       a('card', 'クレジットカード', 'liability'),
       a('loan_sch', '奨学金（返済あり）', 'liability'),
       a('opening', '開始残高', 'equity'),
+      a('valuation', '評価差額', 'equity'),
       a('food', '食費', 'expense'),
       a('transport', '交通費', 'expense'),
       a('daily', '日用品', 'expense'),
@@ -74,7 +76,7 @@ export function defaultState() {
       a('other_inc', 'その他', 'income'),
     ],
     entries: [],
-    recurring: [r('r_tel', '通信費'), r('r_claude', 'Claude'), r('r_prime', 'Amazon Prime')],
+    recurring: [r('r_tel', '通信費'), r('r_claude', 'Claude'), r('r_prime', 'Amazon Prime'), r('r_nisa', 'NISA積立', 'nisa')],
     settings: { backupDays: 7, lastBackupAt: null, last: {} },
   };
 }
@@ -85,6 +87,14 @@ export function migrate(s) {
   // 版1→2：収益の「その他」を1回だけ追加する（あとで削除した場合に戻さないよう、版で判定する）
   if (from < 2 && !s.accounts.some((a) => a.type === 'income' && a.name === 'その他')) {
     s.accounts.push({ id: 'other_inc', name: 'その他', type: 'income', archived: false });
+  }
+  // 版2→3：NISA・評価差額の科目と、NISA積立の固定費を1回だけ追加する
+  if (from < 3) {
+    const def = d.accounts;
+    for (const id of ['nisa', 'valuation']) {
+      if (!s.accounts.some((a) => a.id === id)) s.accounts.push({ ...def.find((a) => a.id === id) });
+    }
+    if (!s.recurring.some((x) => x.id === 'r_nisa')) s.recurring.push({ ...d.recurring.find((x) => x.id === 'r_nisa') });
   }
   s.schema = Math.max(from, SCHEMA);
   s.settings = { ...d.settings, ...(s.settings || {}) };
@@ -155,6 +165,17 @@ export function buildOpeningLines(account, amount, openingId = 'opening') {
   return account.type === 'liability'
     ? [{ acc: openingId, side: 'dr', amount }, { acc: account.id, side: 'cr', amount }]
     : [{ acc: account.id, side: 'dr', amount }, { acc: openingId, side: 'cr', amount }];
+}
+
+// 評価額の更新の仕訳。帳簿の残高 book を評価額 market に合わせる差額を、純資産の「評価差額」で受ける。
+// 値上がり：借方 資産／貸方 評価差額、値下がり：借方 評価差額／貸方 資産。差額が0なら null。
+export function buildValuationLines(assetId, book, market, valuationId = 'valuation') {
+  const diff = market - book;
+  if (diff === 0) return null;
+  const amount = Math.abs(diff);
+  return diff > 0
+    ? [{ acc: assetId, side: 'dr', amount }, { acc: valuationId, side: 'cr', amount }]
+    : [{ acc: valuationId, side: 'dr', amount }, { acc: assetId, side: 'cr', amount }];
 }
 
 // 行の金額を、その勘定科目の残高が増える向きを正として返す

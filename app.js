@@ -1,7 +1,7 @@
 import * as L from './ledger.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.1.1';
+const APP_VERSION = '1.2.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -295,7 +295,7 @@ async function saveEntry() {
   if (r.error) return toast(r.error);
   const d = ui.draft;
   const old = ui.editingId ? state.entries.find((e) => e.id === ui.editingId) : null;
-  const keepKind = old && (old.kind === 'recurring' || old.kind === 'opening') ? old.kind : null;
+  const keepKind = old && ['recurring', 'opening', 'valuation'].includes(old.kind) ? old.kind : null;
   const entry = {
     ...(old || {}),
     id: old ? old.id : L.uid(),
@@ -338,7 +338,8 @@ function startEdit(id) {
   const cr = e.lines.filter((l) => l.side === 'cr');
   const two = dr.length === 1 && cr.length === 1;
   let mode = 'journal';
-  const k = e.kind === 'recurring' ? 'expense' : e.kind;
+  // 自動入力の仕訳は、借方が費用なら支出、資産（積立）なら振替の画面で開く
+  const k = e.kind === 'recurring' ? (acc(dr[0]?.acc)?.type === 'expense' ? 'expense' : 'transfer') : e.kind;
   if (two && ['expense', 'income', 'transfer'].includes(k)) mode = k;
   ui.mode = mode;
   ui.editingId = id;
@@ -377,12 +378,17 @@ function describe(e) {
   if (inc !== 0 && exp === 0) {
     return { title: names('cr', (l) => types(l) === 'income'), sub: names('dr'), amount: inc, cls: 'in' };
   }
+  if (e.kind === 'valuation') {
+    const a = e.lines.find((l) => acc(l.acc)?.type === 'asset');
+    const v = a ? L.signedAmount(a, 'asset') : 0;
+    return { title: '評価額の更新', sub: a ? accName(a.acc) : '', amount: v, cls: v >= 0 ? 'in' : 'out' };
+  }
   if (e.kind === 'opening') return { title: '開始残高', sub: names('dr') + ' ' + names('cr'), amount: total, cls: 'neutral' };
   if (exp === 0 && inc === 0) return { title: `${names('cr')} → ${names('dr')}`, sub: '振替', amount: total, cls: 'neutral' };
   return { title: '仕訳', sub: `収益 ${yen(inc)} ／ 費用 ${yen(exp)}`, amount: inc - exp, cls: inc - exp >= 0 ? 'in' : 'out' };
 }
 
-const KIND_LABEL = { expense: '支出', income: '収入', transfer: '振替', journal: '仕訳', recurring: '固定費', opening: '開始残高' };
+const KIND_LABEL = { expense: '支出', income: '収入', transfer: '振替', journal: '仕訳', recurring: '自動入力', opening: '開始残高', valuation: '評価額の更新' };
 
 function monthNav(key, by, act) {
   return `<div class="pnav">
@@ -419,7 +425,7 @@ function viewHistory() {
     const sign = d.cls === 'out' ? '−' : d.cls === 'in' ? '+' : '';
     html += `<li><button type="button" class="entry" data-act="detail" data-id="${e.id}">
       <span class="sw ${d.color ? '' : 'sw-none'}" style="${d.color ? `background:${d.color}` : ''}"></span>
-      <span class="entry-main"><span class="entry-title">${esc(d.title)}${e.kind === 'recurring' ? '<span class="badge">固定費</span>' : ''}</span>
+      <span class="entry-main"><span class="entry-title">${esc(d.title)}${e.kind === 'recurring' ? '<span class="badge">自動入力</span>' : ''}</span>
       <span class="entry-sub">${esc([d.sub, e.memo].filter(Boolean).join('　'))}</span></span>
       <span class="entry-amt ${d.cls}">${sign}${yen(Math.abs(d.amount))}</span></button></li>`;
   }
@@ -569,6 +575,8 @@ function viewCharts() {
       <div class="hero"><div class="stat-label">純資産</div><div class="hero-value ${nwNow < 0 ? 'neg' : ''}">${yen(nwNow)}</div></div>
       <table class="bal"><thead><tr><th colspan="2">資産</th></tr></thead><tbody>${balRows('asset')}</tbody></table>
       <table class="bal"><thead><tr><th colspan="2">負債</th></tr></thead><tbody>${balRows('liability')}</tbody></table>
+      ${bal.valuation ? `<p class="hint">純資産のうち、評価差額（これまでの値上がり額の累計）：${yen(bal.valuation)}</p>` : ''}
+      <button type="button" class="ghost" data-act="valuation">評価額を更新</button>
     </section>`;
 }
 
@@ -658,10 +666,16 @@ function viewSettings() {
     </section>
 
     <section class="card">
-      <h2>固定費</h2>
-      <p class="hint">アプリを開いたときに、期日を過ぎた分の仕訳を自動で作ります。</p>
+      <h2>固定費・積立</h2>
+      <p class="hint">アプリを開いたときに、期日を過ぎた分の仕訳を自動で作ります。NISAのクレカ積立は「借方 NISA（投資信託）／貸方 クレジットカード」で、支出には数えられません。</p>
       <ul class="entries">${recurring}</ul>
-      <button type="button" class="ghost" data-act="rec-add">固定費を追加</button>
+      <button type="button" class="ghost" data-act="rec-add">追加</button>
+    </section>
+
+    <section class="card">
+      <h2>評価額の更新</h2>
+      <p class="hint">NISAなどの今の評価額を入れると、帳簿の残高との差額を「評価差額」（純資産）として記録します。月に1回程度の更新を想定しています。</p>
+      <button type="button" class="ghost" data-act="valuation">評価額を更新</button>
     </section>
 
     <section class="card">
@@ -702,7 +716,7 @@ function recurringForm(r) {
         <label class="field"><span class="field-label">日</span><select name="day">${Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}"${i + 1 === Number(r.day) ? ' selected' : ''}>${i + 1}日</option>`).join('')}</select></label>
       </div>
       <p class="hint">月の日数より大きい日（例：31日）は、その月の末日になります。</p>
-      <label class="field"><span class="field-label">借方（費用の科目）</span><select name="debit">${accountOptions(r.debit, ['expense'])}</select></label>
+      <label class="field"><span class="field-label">借方（費用の科目、または積立先の資産）</span><select name="debit">${accountOptions(r.debit, ['expense', 'asset'])}</select></label>
       <label class="field"><span class="field-label">貸方（支払元）</span><select name="credit">${accountOptions(r.credit, ['asset', 'liability'])}</select></label>
       <label class="field"><span class="field-label">開始月</span><input name="startMonth" type="month" value="${esc(r.startMonth || L.monthOf(today()))}"></label>
       ${r.lastMonth ? `<p class="hint">${monthLabel(r.lastMonth)}分まで作成済み</p>` : ''}
@@ -744,6 +758,58 @@ function recurringForm(r) {
     });
     closeSheet();
     toast(created.length ? `保存しました。期日を過ぎた${created.length}件の仕訳を作りました` : '保存しました');
+  });
+}
+
+// ---------------------------------------------------------------- 評価額の更新
+function valuationSheet() {
+  const assets = accsOf('asset');
+  const def = assets.find((a) => a.id === 'nisa') || assets[0];
+  if (!state.accounts.some((a) => a.id === 'valuation')) {
+    state.accounts.push({ id: 'valuation', name: '評価差額', type: 'equity', archived: false });
+  }
+  openSheet(`
+    <h2>評価額の更新</h2>
+    <form id="val-form">
+      <label class="field"><span class="field-label">勘定科目</span><select name="acc">${assets.map((a) => `<option value="${a.id}"${a.id === def?.id ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
+      <label class="field"><span class="field-label">日付</span><input name="date" type="date" value="${today()}"></label>
+      <p class="hint" id="val-book"></p>
+      <label class="field"><span class="field-label">今の評価額（証券会社のアプリに出る金額）</span><input name="market" inputmode="numeric" autocomplete="off" placeholder="0"></label>
+      <p class="preview" id="val-preview"></p>
+      <p class="hint">売るときは、先に評価額を売却額に更新してから、入力画面の「振替」で NISA（投資信託）→ 入金先 に移してください。</p>
+      <div class="sheet-actions">
+        <button type="button" class="ghost" data-act="close-sheet">閉じる</button>
+        <button type="submit" class="primary">記録</button>
+      </div>
+    </form>`);
+  const form = $('#val-form');
+  const f = form.elements;
+  const calc = () => {
+    const book = L.balances(state, f.date.value || today())[f.acc.value] || 0;
+    const market = L.parseAmount(f.market.value) ?? (f.market.value.trim() === '0' ? 0 : null);
+    const lines = market == null ? null : L.buildValuationLines(f.acc.value, book, market);
+    return { book, market, lines };
+  };
+  const update = () => {
+    const { book, market, lines } = calc();
+    $('#val-book').textContent = `帳簿の残高（${f.date.value}時点）：${yen(book)}`;
+    $('#val-preview').textContent =
+      market == null ? '' : lines ? `差額 ${market - book > 0 ? '+' : '−'}${yen(Math.abs(market - book))}　仕訳：${linesText(lines)}` : '帳簿の残高と同じなので、記録する仕訳はありません';
+  };
+  form.addEventListener('input', update);
+  form.addEventListener('change', update);
+  update();
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const { market, lines } = calc();
+    if (market == null) return toast('評価額を入力してください');
+    if (!lines) return toast('帳簿の残高と同じなので、記録する仕訳はありません');
+    const entry = { id: L.uid(), date: f.date.value, memo: `評価額 ${yen(market)}`, kind: 'valuation', lines, createdAt: Date.now() };
+    const err = L.validateEntry(entry, state.accounts);
+    if (err) return toast(err);
+    await commit((s) => s.entries.push(entry));
+    closeSheet();
+    toast('記録しました：' + linesText(lines));
   });
 }
 
@@ -934,6 +1000,7 @@ const ACTIONS = {
     toast('記録しました：' + linesText(entry.lines));
   },
   'rec-add': () => recurringForm(null),
+  valuation: () => valuationSheet(),
   'rec-edit': (el) => recurringForm(state.recurring.find((r) => r.id === el.dataset.id)),
   'rec-delete': async (el) => {
     if (!confirm('この固定費の設定を削除しますか？（すでに作られた仕訳は残ります）')) return;

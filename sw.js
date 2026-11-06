@@ -1,6 +1,6 @@
 // オフラインで開けるように、アプリのファイルを端末に保存する。
 // アプリを更新したときは CACHE の番号を上げる（例：kakeibo-v2）。
-const CACHE = 'kakeibo-v3';
+const CACHE = 'kakeibo-v4';
 const ASSETS = [
   './',
   './index.html',

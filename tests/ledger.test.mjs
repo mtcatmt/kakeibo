@@ -80,12 +80,52 @@ test('版1のデータを読み込むと収益の「その他」が1回だけ加
   s.schema = 1;
   s.accounts = s.accounts.filter((a) => a.id !== 'other_inc');
   L.migrate(s);
-  assert.equal(s.schema, 2);
+  assert.equal(s.schema, L.SCHEMA);
   assert.ok(s.accounts.some((a) => a.id === 'other_inc' && a.type === 'income'));
   // 削除したあとに再び読み込んでも戻らない
   s.accounts = s.accounts.filter((a) => a.id !== 'other_inc');
   L.migrate(s);
   assert.ok(!s.accounts.some((a) => a.id === 'other_inc'));
+});
+
+test('版2のデータを読み込むと NISA・評価差額・NISA積立が加わる', () => {
+  const s = L.defaultState();
+  s.schema = 2;
+  s.accounts = s.accounts.filter((a) => a.id !== 'nisa' && a.id !== 'valuation');
+  s.recurring = s.recurring.filter((r) => r.id !== 'r_nisa');
+  L.migrate(s);
+  assert.equal(s.accounts.find((a) => a.id === 'nisa').type, 'asset');
+  assert.equal(s.accounts.find((a) => a.id === 'valuation').type, 'equity');
+  assert.equal(s.recurring.find((r) => r.id === 'r_nisa').debit, 'nisa');
+  const n = s.accounts.length;
+  L.migrate(s);
+  assert.equal(s.accounts.length, n);
+});
+
+test('NISA：クレカ積立・評価額の更新・純資産・支出への影響', () => {
+  const s = L.defaultState();
+  Object.assign(s.recurring.find((r) => r.id === 'r_nisa'), { amount: 30000, day: 1, startMonth: '2026-09', active: true });
+  L.generateRecurring(s, '2026-11-06'); // 9月・10月・11月の3回
+  let bal = L.balances(s);
+  assert.equal(bal.nisa, 90000);
+  assert.equal(bal.card, 90000);
+  // 積立は資産の購入なので支出に数えない
+  assert.equal(L.summarize(s, 'month').get('2026-10').expenseTotal, 0);
+  // 評価額 95,000 → 差額 5,000 は評価差額（純資産）
+  const up = L.buildValuationLines('nisa', bal.nisa, 95000);
+  assert.deepEqual(up, [{ acc: 'nisa', side: 'dr', amount: 5000 }, { acc: 'valuation', side: 'cr', amount: 5000 }]);
+  s.entries.push({ id: 'v1', date: '2026-11-06', kind: 'valuation', lines: up });
+  bal = L.balances(s);
+  assert.equal(bal.nisa, 95000);
+  assert.equal(bal.valuation, 5000);
+  assert.equal(L.netWorth(s), 95000 - 90000);
+  // 収益・費用には入らない
+  const m = L.summarize(s, 'month').get('2026-11');
+  assert.equal(m.incomeTotal, 0);
+  assert.equal(m.expenseTotal, 0);
+  // 値下がり
+  assert.deepEqual(L.buildValuationLines('nisa', 95000, 93000), [{ acc: 'valuation', side: 'dr', amount: 2000 }, { acc: 'nisa', side: 'cr', amount: 2000 }]);
+  assert.equal(L.buildValuationLines('nisa', 95000, 95000), null);
 });
 
 test('期間キーと金額の解析', () => {
