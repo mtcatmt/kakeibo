@@ -1,7 +1,7 @@
 import * as L from './ledger.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -866,8 +866,10 @@ function exportBackup() {
     render();
     toast('バックアップを書き出しました');
   };
-  // 共有メニューはタップの直後に呼ぶ必要があるので、ここより前で await しない
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+  // 共有メニューはタップの直後に呼ぶ必要があるので、ここより前で await しない。
+  // パソコン（指で操作しない端末）の共有画面にはファイル保存の項目がないので、ダウンロードにする
+  const touch = window.matchMedia('(pointer: coarse)').matches;
+  if (touch && navigator.canShare && navigator.canShare({ files: [file] })) {
     navigator.share({ files: [file], title: name }).then(done, (e) => {
       if (e.name !== 'AbortError') toast('共有メニューを開けませんでした：' + e.message);
     });
