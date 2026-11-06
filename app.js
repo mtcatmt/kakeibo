@@ -1,7 +1,7 @@
 import * as L from './ledger.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.1.1';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -678,6 +678,7 @@ function viewSettings() {
     <section class="card">
       <h2>データ</h2>
       <p>仕訳 ${state.entries.length}件。データはこの端末のこのアプリの中にだけ保存されています。</p>
+      <p id="offline-status" class="hint"></p>
       <p id="persist-status" class="hint"></p>
       <button type="button" class="danger" data-act="wipe">すべてのデータを削除</button>
       <p class="hint">版 ${APP_VERSION}${DEMO ? '（デモ表示：変更は保存されません）' : ''}</p>
@@ -832,6 +833,32 @@ function render() {
       const el = $('#persist-status');
       if (el) el.textContent = p ? 'このデータは、端末の容量が不足しても自動では削除されない設定になっています。' : '端末の容量が不足すると、ブラウザがこのデータを削除する場合があります。バックアップを定期的に取ってください。';
     });
+  }
+  if (ui.tab === 'settings') showOfflineStatus();
+}
+
+// オフラインで開くためのファイルが端末に保存されているかを表示する
+async function showOfflineStatus() {
+  const el = $('#offline-status');
+  if (!el) return;
+  if (!('serviceWorker' in navigator) || !('caches' in window)) {
+    el.textContent = 'オフライン：このブラウザはオフラインでの起動に対応していません。';
+    return;
+  }
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const keys = (await caches.keys()).filter((k) => k.startsWith('kakeibo-'));
+    let ok = false;
+    if (reg && reg.active && keys.length) {
+      const c = await caches.open(keys[keys.length - 1]);
+      ok = !!(await c.match('./index.html')) && !!(await c.match('./app.js'));
+    }
+    el.textContent = ok
+      ? `オフライン：準備完了（${keys[keys.length - 1]}）。インターネットにつながっていなくても開けます。`
+      : 'オフライン：準備ができていません。インターネットにつながった状態でホーム画面のアイコンから開き、数秒待ってから設定画面を開き直してください。';
+    el.classList.toggle('warn', !ok);
+  } catch (e) {
+    el.textContent = 'オフライン：状態を確認できませんでした（' + e.message + '）';
   }
 }
 
