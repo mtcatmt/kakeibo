@@ -75,6 +75,19 @@ test('固定費：毎年', () => {
   assert.equal(L.generateRecurring(s, '2026-12-31').length, 0);
 });
 
+test('版1のデータを読み込むと収益の「その他」が1回だけ加わる', () => {
+  const s = L.defaultState();
+  s.schema = 1;
+  s.accounts = s.accounts.filter((a) => a.id !== 'other_inc');
+  L.migrate(s);
+  assert.equal(s.schema, 2);
+  assert.ok(s.accounts.some((a) => a.id === 'other_inc' && a.type === 'income'));
+  // 削除したあとに再び読み込んでも戻らない
+  s.accounts = s.accounts.filter((a) => a.id !== 'other_inc');
+  L.migrate(s);
+  assert.ok(!s.accounts.some((a) => a.id === 'other_inc'));
+});
+
 test('期間キーと金額の解析', () => {
   assert.deepEqual(L.periodKeysEnding('2026-02', 'month', 3), ['2025-12', '2026-01', '2026-02']);
   assert.deepEqual(L.periodKeysEnding('2026', 'year', 2), ['2025', '2026']);

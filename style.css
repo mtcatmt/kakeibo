@@ -100,6 +100,7 @@ p { margin: 6px 0; }
 }
 .chip.on { border-color: var(--accent); background: var(--accent); color: var(--accent-text); }
 .chip.on .sw { box-shadow: 0 0 0 2px var(--accent-text); }
+.chip-add { border-style: dashed; color: var(--text-2); background: none; }
 .field { display: block; min-width: 0; }
 .field input, .field select, .jrow select, .jrow input, .add-acc input, .add-acc select, .field.inline select {
   width: 100%; border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 9px 10px; font-size: 16px;

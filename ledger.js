@@ -1,6 +1,7 @@
 // 帳簿の計算（画面に依存しない部分）。Node.js からも読み込んでテストできる。
 
-export const SCHEMA = 1;
+// データ形式の版。2：収益の「その他」を追加
+export const SCHEMA = 2;
 
 export const TYPE_LABEL = {
   asset: '資産',
@@ -70,6 +71,7 @@ export function defaultState() {
       a('job2', 'バイト②', 'income'),
       a('grant_sch', '奨学金（返済なし）', 'income'),
       a('allowance', '小遣い', 'income'),
+      a('other_inc', 'その他', 'income'),
     ],
     entries: [],
     recurring: [r('r_tel', '通信費'), r('r_claude', 'Claude'), r('r_prime', 'Amazon Prime')],
@@ -79,7 +81,12 @@ export function defaultState() {
 
 export function migrate(s) {
   const d = defaultState();
-  s.schema = s.schema || SCHEMA;
+  const from = s.schema || 1;
+  // 版1→2：収益の「その他」を1回だけ追加する（あとで削除した場合に戻さないよう、版で判定する）
+  if (from < 2 && !s.accounts.some((a) => a.type === 'income' && a.name === 'その他')) {
+    s.accounts.push({ id: 'other_inc', name: 'その他', type: 'income', archived: false });
+  }
+  s.schema = Math.max(from, SCHEMA);
   s.settings = { ...d.settings, ...(s.settings || {}) };
   s.settings.last = s.settings.last || {};
   for (const r of s.recurring) {

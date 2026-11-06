@@ -1,7 +1,7 @@
 import * as L from './ledger.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -131,10 +131,11 @@ function newDraft(mode) {
   }
 }
 
-function chips(field, list, selected, withColor = false) {
+// 選択肢の並び。最後に、その場で科目を追加するボタンを置く（types は追加できる区分）
+function chips(field, types, selected, withColor = false) {
   return (
     `<div class="chips" data-group="${field}">` +
-    list
+    accsOf(...types)
       .map(
         (a) =>
           `<button type="button" class="chip${a.id === selected ? ' on' : ''}" data-act="pick" data-field="${field}" data-val="${a.id}">` +
@@ -142,8 +143,50 @@ function chips(field, list, selected, withColor = false) {
           `${esc(a.name)}</button>`,
       )
       .join('') +
+    `<button type="button" class="chip chip-add" data-act="add-acc-inline" data-field="${field}" data-types="${types.join(',')}">＋ 追加</button>` +
     '</div>'
   );
+}
+
+// 科目を追加する。問題があればその内容を、なければ追加した科目を返す
+async function addAccount(type, name) {
+  name = (name || '').trim();
+  if (!name) return { error: '科目の名前を入力してください' };
+  if (state.accounts.some((a) => a.type === type && a.name === name)) return { error: `${L.TYPE_LABEL[type]}に同じ名前の科目があります` };
+  const account = { id: L.uid(), name, type, archived: false };
+  await commit((s) => s.accounts.push(account));
+  return { account };
+}
+
+const TYPE_HINT = { asset: '現金・口座・電子マネーなど', liability: 'クレジットカード・借入など' };
+
+function addAccountSheet(field, types) {
+  const typeField =
+    types.length > 1
+      ? `<label class="field"><span class="field-label">区分</span><select name="acctype">${types.map((t) => `<option value="${t}">${L.TYPE_LABEL[t]}（${TYPE_HINT[t] || ''}）</option>`).join('')}</select></label>`
+      : `<input type="hidden" name="acctype" value="${types[0]}"><p class="hint">区分：${L.TYPE_LABEL[types[0]]}</p>`;
+  openSheet(`
+    <h2>科目の追加</h2>
+    <form id="acc-form">
+      <label class="field"><span class="field-label">名前</span><input name="accname" autocomplete="off" placeholder="例：PayPay"></label>
+      ${typeField}
+      <p class="hint">名前の変更・非表示・削除は、設定画面の「勘定科目」からできます。</p>
+      <div class="sheet-actions">
+        <button type="button" class="ghost" data-act="close-sheet">閉じる</button>
+        <button type="submit" class="primary">追加</button>
+      </div>
+    </form>`);
+  const form = $('#acc-form');
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const f = form.elements;
+    const r = await addAccount(f.acctype.value, f.accname.value);
+    if (r.error) return toast(r.error);
+    ui.draft[field] = r.account.id; // 追加した科目を選んだ状態にする
+    closeSheet();
+    render();
+    toast(`${L.TYPE_LABEL[r.account.type]}の科目「${r.account.name}」を追加しました`);
+  });
 }
 
 function accountOptions(selected, types = L.TYPE_ORDER) {
@@ -171,14 +214,14 @@ function viewInput() {
     body += `<label class="amount"><span>¥</span><input id="f-amount" data-field="amount" inputmode="numeric" autocomplete="off" placeholder="0" value="${esc(d.amount)}"></label>`;
   }
   if (m === 'expense') {
-    body += `<div class="field-label">科目</div>${chips('acc', accsOf('expense'), d.acc, true)}`;
-    body += `<div class="field-label">支払元</div>${chips('from', accsOf('asset', 'liability'), d.from)}`;
+    body += `<div class="field-label">科目</div>${chips('acc', ['expense'], d.acc, true)}`;
+    body += `<div class="field-label">支払元</div>${chips('from', ['asset', 'liability'], d.from)}`;
   } else if (m === 'income') {
-    body += `<div class="field-label">科目</div>${chips('acc', accsOf('income'), d.acc)}`;
-    body += `<div class="field-label">入金先</div>${chips('to', accsOf('asset'), d.to)}`;
+    body += `<div class="field-label">科目</div>${chips('acc', ['income'], d.acc)}`;
+    body += `<div class="field-label">入金先</div>${chips('to', ['asset'], d.to)}`;
   } else if (m === 'transfer') {
-    body += `<div class="field-label">移動元</div>${chips('from', accsOf('asset', 'liability'), d.from)}`;
-    body += `<div class="field-label">移動先</div>${chips('to', accsOf('asset', 'liability'), d.to)}`;
+    body += `<div class="field-label">移動元</div>${chips('from', ['asset', 'liability'], d.from)}`;
+    body += `<div class="field-label">移動先</div>${chips('to', ['asset', 'liability'], d.to)}`;
     body += `<p class="hint">カードの引き落とし：移動元＝銀行口座、移動先＝クレジットカード<br>貸与奨学金の受け取り：移動元＝奨学金（返済あり）、移動先＝銀行口座</p>`;
   } else {
     body +=
@@ -886,13 +929,11 @@ const ACTIONS = {
     await commit((s) => (s.accounts = s.accounts.filter((x) => x.id !== a.id)));
   },
   'acc-add': async () => {
-    const type = $('#new-acc-type').value;
-    const name = $('#new-acc-name').value.trim();
-    if (!name) return toast('科目の名前を入力してください');
-    if (state.accounts.some((a) => a.type === type && a.name === name)) return toast('同じ名前の科目があります');
-    await commit((s) => s.accounts.push({ id: L.uid(), name, type, archived: false }));
-    toast(`${L.TYPE_LABEL[type]}の科目「${name}」を追加しました`);
+    const r = await addAccount($('#new-acc-type').value, $('#new-acc-name').value);
+    if (r.error) return toast(r.error);
+    toast(`${L.TYPE_LABEL[r.account.type]}の科目「${r.account.name}」を追加しました`);
   },
+  'add-acc-inline': (el) => addAccountSheet(el.dataset.field, el.dataset.types.split(',')),
   wipe: async () => {
     if (!confirm('すべての仕訳・科目・設定を削除して、最初の状態に戻します。先にバックアップを書き出しましたか？')) return;
     if (!confirm('本当に削除しますか？この操作は取り消せません。')) return;
