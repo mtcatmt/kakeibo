@@ -1,7 +1,7 @@
 import * as L from './ledger.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.4.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -690,6 +690,20 @@ function viewSettings() {
       <p class="hint">仕訳で使っている科目は削除できません。使わなくなった科目は「非表示」にすると、入力画面に出なくなります。</p>
     </section>
 
+    ${DEMO ? '' : `<section class="card">
+      <h2>ロック（4桁の番号）</h2>
+      ${lock
+        ? `<p>オン：アプリを開いたときに番号を聞きます。</p>
+          <label class="field inline"><span>ほかのアプリに切り替えてからロックするまで
+            <select data-lock="after">${LOCK_AFTER.map(([v, lb]) => `<option value="${v}"${v === lock.after ? ' selected' : ''}>${lb}</option>`).join('')}</select></span></label>
+          <div class="btn-row">
+            <button type="button" class="ghost" data-act="pin-change">番号を変更</button>
+            <button type="button" class="ghost" data-act="pin-off">ロックをやめる</button>
+          </div>`
+        : `<p>オフ</p><button type="button" class="ghost" data-act="pin-set">番号を設定</button>`}
+      <p class="hint">この番号は、この端末でアプリの画面を開くのを止めるためのもので、保存されたデータそのものは暗号化されません。番号はバックアップのファイルには含まれません。番号を忘れた場合は、ロック画面の「忘れた場合」から、データをすべて削除して解除します（バックアップがあれば復元できます）。</p>
+    </section>`}
+
     <section class="card">
       <h2>データ</h2>
       <p>仕訳 ${state.entries.length}件。データはこの端末のこのアプリの中にだけ保存されています。</p>
@@ -903,6 +917,147 @@ async function importBackup(file) {
   toast('バックアップから復元しました');
 }
 
+// ---------------------------------------------------------------- ロック（4桁の番号）
+// 番号は帳簿のデータ（state）とは別のキーに保存し、バックアップのファイルには含めない。
+// アプリの画面を開くのを止めるためのもので、端末に保存されたデータそのものは暗号化しない。
+const PIN_LEN = 4;
+const LOCK_AFTER = [[0, 'すぐ'], [1, '1分'], [5, '5分'], [15, '15分']];
+let lock = null; // { salt, hash, after }。after：ほかのアプリに切り替えてからロックするまでの分数
+let locked = false;
+let hiddenAt = null;
+let padCtl = null; // 表示中の番号入力画面の操作（キーを押す・閉じる）
+
+const toHex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+async function hashPin(pin, salt) {
+  return toHex(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${salt}:${pin}`))));
+}
+const checkPin = async (p) => ((await hashPin(p, lock.salt)) === lock.hash ? null : '番号が違います');
+
+async function saveLock(next) {
+  await idbSet('lock', next);
+  lock = next;
+}
+
+// ロック画面を出している間は、後ろの画面を操作・読み上げできないようにする
+function cover(on) {
+  $('#lock').hidden = !on;
+  document.body.classList.toggle('locked', on);
+  for (const e of document.querySelectorAll('#view, .tabbar, #banner, #toast')) e.inert = on;
+  if (on) {
+    closeSheet();
+    document.activeElement?.blur();
+  }
+}
+
+// 番号の入力画面を出す。4桁が入ったら check に渡し、エラー文が返ればやり直し、null なら閉じて番号を返す。
+// cancel：「キャンセル」で null を返す。forgot：「忘れた場合」を押したときの処理（true を返したら閉じる）
+function askPin({ title, check = async () => null, cancel = false, forgot = null }) {
+  return new Promise((resolve) => {
+    const el = $('#lock');
+    let entered = '';
+    let busy = false;
+    const left = cancel
+      ? '<button type="button" class="key-text" data-key="cancel">キャンセル</button>'
+      : forgot
+        ? '<button type="button" class="key-text" data-key="forgot">忘れた場合</button>'
+        : '<span></span>';
+    el.innerHTML = `<div class="lock-box">
+      <p class="lock-msg">${esc(title)}</p>
+      <div class="lock-dots" aria-hidden="true">${'<span></span>'.repeat(PIN_LEN)}</div>
+      <p class="lock-err" role="alert"></p>
+      <div class="keypad">
+        ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button type="button" data-key="${n}">${n}</button>`).join('')}
+        ${left}
+        <button type="button" data-key="0">0</button>
+        <button type="button" class="key-back" data-key="back" aria-label="1文字消す">⌫</button>
+      </div></div>`;
+    const dots = el.querySelector('.lock-dots');
+    const errEl = el.querySelector('.lock-err');
+    const update = (err) => {
+      dots.querySelectorAll('span').forEach((s, i) => s.classList.toggle('on', i < entered.length));
+      errEl.textContent = err;
+    };
+    const finish = (v) => {
+      padCtl = null;
+      el.onclick = null;
+      cover(false);
+      resolve(v);
+    };
+    const press = async (k) => {
+      if (busy) return;
+      if (k === 'cancel') return cancel && finish(null);
+      if (k === 'forgot') {
+        if (forgot && (await forgot())) finish(null);
+        return;
+      }
+      if (k === 'back') entered = entered.slice(0, -1);
+      else if (entered.length < PIN_LEN) entered += k;
+      update('');
+      if (entered.length < PIN_LEN) return;
+      busy = true;
+      await new Promise((r) => setTimeout(r, 120)); // 4つ目の丸が埋まったのを見せてから判定する
+      const err = await check(entered);
+      busy = false;
+      if (err == null) return finish(entered);
+      entered = '';
+      update(err);
+      dots.classList.remove('shake');
+      void dots.offsetWidth; // 揺れのアニメーションを最初からやり直す
+      dots.classList.add('shake');
+    };
+    el.onclick = (ev) => {
+      const b = ev.target.closest('[data-key]');
+      if (b) press(b.dataset.key);
+    };
+    padCtl = { press, close: () => finish(null) };
+    cover(true);
+  });
+}
+
+async function lockNow() {
+  if (!lock || locked) return;
+  locked = true;
+  padCtl?.close(); // 番号の設定・変更の途中なら、それをやめてからロックする
+  await askPin({ title: '番号を入力', check: checkPin, forgot: forgotPin });
+  locked = false;
+}
+
+async function setPin(doneMsg = '番号を設定しました') {
+  if (!storageOk) return toast('データの保存場所を開けないため、番号を設定できません');
+  if (!window.crypto?.subtle) return toast('このページではロックを使えません（https のアドレスで開いてください）');
+  const p1 = await askPin({ title: '新しい番号（4桁）を入力', cancel: true });
+  if (!p1) return;
+  const p2 = await askPin({ title: '確認のため、もう一度入力', cancel: true, check: async (p) => (p === p1 ? null : '1回目の番号と違います') });
+  if (!p2) return;
+  const salt = toHex(crypto.getRandomValues(new Uint8Array(16)));
+  try {
+    await saveLock({ salt, hash: await hashPin(p1, salt), after: lock ? lock.after : 1 });
+  } catch (e) {
+    return toast('番号を保存できませんでした：' + e.message);
+  }
+  render();
+  toast(doneMsg);
+}
+
+// 番号を忘れたとき：番号を通さずに開く方法を作らないため、データをすべて削除して解除する
+async function forgotPin() {
+  if (!confirm('番号を解除するには、この端末の家計簿のデータ（仕訳・科目・設定）をすべて削除します。バックアップのファイルがあれば、削除のあと設定画面の「ファイルから復元」で戻せます。削除しますか？')) return false;
+  if (!confirm('本当に削除しますか？この操作は取り消せません。')) return false;
+  state = L.defaultState();
+  ui.editingId = null;
+  ui.draft = newDraft(ui.mode);
+  ui.tab = 'settings';
+  await save();
+  try {
+    await saveLock(null);
+  } catch {
+    lock = null;
+  }
+  render();
+  toast('データと番号を削除しました。バックアップがあれば「ファイルから復元」で戻せます');
+  return true;
+}
+
 // ---------------------------------------------------------------- シートと上部の表示
 function openSheet(html) {
   const d = $('#sheet');
@@ -1072,6 +1227,20 @@ const ACTIONS = {
     toast(`${L.TYPE_LABEL[r.account.type]}の科目「${r.account.name}」を追加しました`);
   },
   'add-acc-inline': (el) => addAccountSheet(el.dataset.field, el.dataset.types.split(',')),
+  'pin-set': () => setPin(),
+  'pin-change': async () => {
+    if (await askPin({ title: '今の番号を入力', cancel: true, check: checkPin })) setPin('番号を変更しました');
+  },
+  'pin-off': async () => {
+    if (!(await askPin({ title: '今の番号を入力', cancel: true, check: checkPin }))) return;
+    try {
+      await saveLock(null);
+    } catch (e) {
+      return toast('保存できませんでした：' + e.message);
+    }
+    render();
+    toast('ロックをやめました');
+  },
   wipe: async () => {
     if (!confirm('すべての仕訳・科目・設定を削除して、最初の状態に戻します。先にバックアップを書き出しましたか？')) return;
     if (!confirm('本当に削除しますか？この操作は取り消せません。')) return;
@@ -1110,6 +1279,12 @@ document.addEventListener('change', async (ev) => {
     updatePreview();
   } else if (t.dataset.setting) {
     await commit((s) => (s.settings[t.dataset.setting] = Number(t.value)));
+  } else if (t.dataset.lock === 'after' && lock) {
+    try {
+      await saveLock({ ...lock, after: Number(t.value) });
+    } catch (e) {
+      toast('保存できませんでした：' + e.message);
+    }
   } else if (t.id === 'import-file' && t.files[0]) {
     await importBackup(t.files[0]);
     t.value = '';
@@ -1122,9 +1297,25 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(drawCharts, 150);
 });
 
-// 日付が変わってから再び開いたときにも固定費を作る
+// 番号入力画面では、パソコンのキーボードの数字・Backspace・Esc も使える
+document.addEventListener('keydown', (ev) => {
+  if (!padCtl || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  const k = /^\d$/.test(ev.key) ? ev.key : ev.key === 'Backspace' ? 'back' : ev.key === 'Escape' ? 'cancel' : null;
+  if (!k) return;
+  ev.preventDefault();
+  padCtl.press(k);
+});
+
+// ほかのアプリから戻ったときのロックと、日付が変わってから再び開いたときの固定費の作成
 document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState !== 'visible' || !state) return;
+  if (document.visibilityState === 'hidden') {
+    hiddenAt = Date.now();
+    if (lock && lock.after === 0) lockNow();
+    return;
+  }
+  if (lock && hiddenAt != null && Date.now() - hiddenAt >= lock.after * 60000) lockNow();
+  hiddenAt = null;
+  if (!state) return;
   const created = L.generateRecurring(state, today());
   if (created.length) {
     await save();
@@ -1185,6 +1376,7 @@ async function init() {
     try {
       dbp = openDB();
       stored = await idbGet('state');
+      lock = (await idbGet('lock')) || null;
     } catch (e) {
       storageOk = false;
       toast('データの保存場所を開けませんでした。この状態では入力が保存されません：' + (e && e.message));
@@ -1198,6 +1390,7 @@ async function init() {
   const hashTab = location.hash.slice(1);
   if (VIEWS[hashTab]) ui.tab = hashTab;
   ui.draft = newDraft(ui.mode);
+  if (lock) lockNow();
   render();
 
   if ('serviceWorker' in navigator && !DEMO && location.protocol !== 'file:') {
