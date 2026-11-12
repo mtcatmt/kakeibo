@@ -1,7 +1,7 @@
 import * as L from './ledger.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -66,7 +66,10 @@ async function commit(fn) {
 const $ = (s, root = document) => root.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const acc = (id) => state.accounts.find((a) => a.id === id);
-const accName = (id) => acc(id)?.name ?? '（削除された科目）';
+const ADV_NEW = '__adv_new__'; // 立替金の科目がまだないときの仮のid（保存するときに科目を作る）
+const accName = (id) => (id === ADV_NEW ? L.ADVANCE_NAME : acc(id)?.name ?? '（削除された科目）');
+// 立替に使う資産の科目（名前に「立替」を含むもの）。なければ ADV_NEW
+const advanceAccId = () => (state.accounts.find((a) => a.type === 'asset' && !a.archived && a.name.includes('立替')) || {}).id || ADV_NEW;
 const accsOf = (...types) => state.accounts.filter((a) => types.includes(a.type) && !a.archived);
 const monthLabel = (ym) => `${ym.slice(0, 4)}年${Number(ym.slice(5, 7))}月`;
 const periodLabel = (key, by) => (by === 'year' ? `${key}年` : monthLabel(key));
@@ -115,7 +118,7 @@ function newDraft(mode) {
   const base = { date: ui.draft?.date || today(), memo: '' };
   switch (mode) {
     case 'expense':
-      return { ...base, amount: '', acc: null, from: last.expenseFrom || 'cash' };
+      return { ...base, amount: '', acc: null, from: last.expenseFrom || 'cash', advOn: false, adv: '', advAcc: null };
     case 'income':
       return { ...base, amount: '', acc: null, to: last.incomeTo || 'bank' };
     case 'transfer':
@@ -211,18 +214,29 @@ function viewInput() {
   const m = ui.mode;
   let body = '';
   if (m !== 'journal') {
-    body += `<label class="amount"><span>¥</span><input id="f-amount" data-field="amount" inputmode="numeric" autocomplete="off" placeholder="0" value="${esc(d.amount)}"></label>`;
+    body += `<div class="amount"><span>¥</span><input id="f-amount" data-field="amount" inputmode="numeric" autocomplete="off" placeholder="0" value="${esc(d.amount)}" aria-label="金額">${calcBtn('amount')}</div>`;
   }
   if (m === 'expense') {
     body += `<div class="field-label">科目</div>${chips('acc', ['expense'], d.acc, true)}`;
     body += `<div class="field-label">支払元</div>${chips('from', ['asset', 'liability'], d.from)}`;
+    body += d.advOn
+      ? `<div class="adv">
+          <div class="adv-head"><span class="field-label">うち立替（ほかの人の分）</span><button type="button" class="link" data-act="adv-toggle">立替をやめる</button></div>
+          <div class="adv-row"><span>¥</span><input id="f-adv" data-field="adv" inputmode="numeric" autocomplete="off" placeholder="0" value="${esc(d.adv)}" aria-label="立替の金額">${calcBtn('adv')}</div>
+          <div class="btn-row adv-quick">
+            <button type="button" class="chip" data-act="adv-set" data-val="half">半分</button>
+            <button type="button" class="chip" data-act="adv-set" data-val="all">全額</button>
+          </div>
+          <p class="hint" id="adv-note"></p>
+        </div>`
+      : `<button type="button" class="chip chip-add adv-open" data-act="adv-toggle">＋ 立替を含める（ほかの人の分もまとめて払った）</button>`;
   } else if (m === 'income') {
     body += `<div class="field-label">科目</div>${chips('acc', ['income'], d.acc)}`;
     body += `<div class="field-label">入金先</div>${chips('to', ['asset'], d.to)}`;
   } else if (m === 'transfer') {
     body += `<div class="field-label">移動元</div>${chips('from', ['asset', 'liability'], d.from)}`;
     body += `<div class="field-label">移動先</div>${chips('to', ['asset', 'liability'], d.to)}`;
-    body += `<p class="hint">カードの引き落とし：移動元＝銀行口座、移動先＝クレジットカード<br>貸与奨学金の受け取り：移動元＝奨学金（返済あり）、移動先＝銀行口座</p>`;
+    body += `<p class="hint">カードの引き落とし：移動元＝銀行口座、移動先＝クレジットカード<br>貸与奨学金の受け取り：移動元＝奨学金（返済あり）、移動先＝銀行口座<br>立て替えた分が返ってきた：移動元＝${esc(accName(advanceAccId()))}、移動先＝受け取った現金・口座など</p>`;
   } else {
     body +=
       `<div class="jrows">` +
@@ -263,6 +277,14 @@ function draftLines() {
   }
   const amount = L.parseAmount(d.amount);
   if (!amount) return { error: '金額を入力してください' };
+  if (ui.mode === 'expense' && d.advOn) {
+    const adv = L.parseAmount(d.adv);
+    if (!adv) return { error: '立替の金額を入力してください' };
+    if (adv > amount) return { error: '立替の金額が支払った金額を超えています' };
+    if (adv < amount && !d.acc) return { error: '科目を選んでください' };
+    if (!d.from) return { error: '支払元を選んでください' };
+    return { lines: L.buildAdvanceLines({ ...d, advAcc: d.advAcc || advanceAccId() }, amount, adv), own: amount - adv, adv };
+  }
   if (ui.mode !== 'transfer' && !d.acc) return { error: '科目を選んでください' };
   if (ui.mode === 'expense' && !d.from) return { error: '支払元を選んでください' };
   if (ui.mode === 'income' && !d.to) return { error: '入金先を選んでください' };
@@ -288,12 +310,74 @@ function updatePreview() {
   }
   const r = draftLines();
   p.textContent = r.error ? '' : '仕訳：' + linesText(r.lines);
+  const note = $('#adv-note');
+  if (note) {
+    const name = accName(ui.draft.advAcc || advanceAccId());
+    note.textContent = r.adv
+      ? `自分の分 ${yen(r.own)} を支出に、立替 ${yen(r.adv)} を「${name}」（資産）に記録します。返ってきたら振替で、移動元＝${name}。`
+      : '';
+  }
+}
+
+// 金額欄の横の電卓ボタン
+const calcBtn = (field) => `<button type="button" class="calc-btn" data-act="calc" data-field="${field}" aria-label="電卓">＋−×÷</button>`;
+
+// 電卓。決定すると、計算結果（1円未満は四捨五入）を入力欄に入れる
+function calcSheet(field) {
+  let expr = String(ui.draft[field] || '')
+    .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/×/g, '*').replace(/÷/g, '/').replace(/[−＋]/g, (c) => (c === '−' ? '-' : '+'))
+    .replace(/[^\d+\-*/]/g, '');
+  const show = (x) => x.replace(/\*/g, '×').replace(/\//g, '÷').replace(/-/g, '−').replace(/\+/g, '＋');
+  const keys = ['C', 'back', '/', '*', '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '00', '0'];
+  const label = { C: 'C', back: '⌫', '/': '÷', '*': '×', '-': '−', '+': '＋' };
+  openSheet(`
+    <h2>電卓</h2>
+    <div class="calc-disp"><div class="calc-expr" id="calc-expr"></div><div class="calc-res" id="calc-res"></div></div>
+    <div class="calc-keys" id="calc-keys">
+      ${keys.map((k) => `<button type="button" data-key="${k}" class="${/\d/.test(k) ? '' : 'op'}">${label[k] || k}</button>`).join('')}
+      <button type="button" data-key="ok" class="ok">決定</button>
+    </div>
+    <p class="hint">1円未満は四捨五入します。</p>
+    <div class="sheet-actions"><button type="button" class="ghost" data-act="close-sheet">閉じる</button></div>`);
+  const ops = '+-*/';
+  const trimmed = () => expr.replace(/[-+*/]$/, '');
+  const update = () => {
+    $('#calc-expr').textContent = show(expr) || '0';
+    const v = L.evalExpr(trimmed());
+    $('#calc-res').textContent = v == null || !/[-+*/]/.test(trimmed()) ? '' : '＝ ' + yen(Math.round(v));
+  };
+  $('#calc-keys').onclick = (ev) => {
+    const k = ev.target.closest('[data-key]')?.dataset.key;
+    if (!k) return;
+    if (k === 'C') expr = '';
+    else if (k === 'back') expr = expr.slice(0, -1);
+    else if (ops.includes(k)) {
+      if (!expr) return;
+      expr = ops.includes(expr.at(-1)) ? expr.slice(0, -1) + k : expr + k;
+    } else if (k === 'ok') {
+      const n = L.parseAmount(trimmed());
+      if (!n) return toast('計算結果が1円以上になる式を入力してください');
+      ui.draft[field] = String(n);
+      closeSheet();
+      render();
+      return;
+    } else expr += k;
+    update();
+  };
+  update();
 }
 
 async function saveEntry() {
-  const r = draftLines();
+  let r = draftLines();
   if (r.error) return toast(r.error);
   const d = ui.draft;
+  if (r.lines.some((l) => l.acc === ADV_NEW)) {
+    // 立替金の科目がまだないので、資産の科目として作ってから仕訳を作り直す
+    const a = await addAccount('asset', L.ADVANCE_NAME);
+    if (a.error) return toast(a.error);
+    r = draftLines();
+  }
   const old = ui.editingId ? state.entries.find((e) => e.id === ui.editingId) : null;
   const keepKind = old && ['recurring', 'opening', 'valuation'].includes(old.kind) ? old.kind : null;
   const entry = {
@@ -301,7 +385,8 @@ async function saveEntry() {
     id: old ? old.id : L.uid(),
     date: d.date,
     memo: (d.memo || '').trim(),
-    kind: keepKind || ui.mode,
+    // 全額が立替の支出は、費用を含まないので振替として扱う
+    kind: keepKind || (ui.mode === 'expense' && r.adv && !r.own ? 'transfer' : ui.mode),
     lines: r.lines,
     createdAt: old ? old.createdAt : Date.now(),
     updatedAt: Date.now(),
@@ -341,10 +426,23 @@ function startEdit(id) {
   // 自動入力の仕訳は、借方が費用なら支出、資産（積立）なら振替の画面で開く
   const k = e.kind === 'recurring' ? L.recurringKind({ debit: dr[0]?.acc, credit: cr[0]?.acc }, state.accounts) : e.kind;
   if (two && ['expense', 'income', 'transfer'].includes(k)) mode = k;
+  // 立替を含む支出（借方 費用・立替金／貸方 支払元）は、支出の画面で立替欄を開いた状態にする
+  const tp = (l) => acc(l.acc)?.type;
+  const advLine = e.kind === 'expense' && dr.length === 2 && cr.length === 1 ? dr.find((l) => tp(l) === 'asset') : null;
+  const ownLine = advLine ? dr.find((l) => l !== advLine && tp(l) === 'expense') : null;
+  if (advLine && ownLine) {
+    ui.mode = 'expense';
+    ui.editingId = id;
+    ui.draft = { date: e.date, memo: e.memo || '', amount: String(cr[0].amount), acc: ownLine.acc, from: cr[0].acc, advOn: true, adv: String(advLine.amount), advAcc: advLine.acc };
+    closeSheet();
+    ui.tab = 'input';
+    render();
+    return;
+  }
   ui.mode = mode;
   ui.editingId = id;
   const base = { date: e.date, memo: e.memo || '' };
-  if (mode === 'expense') ui.draft = { ...base, amount: String(dr[0].amount), acc: dr[0].acc, from: cr[0].acc };
+  if (mode === 'expense') ui.draft = { ...base, amount: String(dr[0].amount), acc: dr[0].acc, from: cr[0].acc, advOn: false, adv: '', advAcc: null };
   else if (mode === 'income') ui.draft = { ...base, amount: String(dr[0].amount), acc: cr[0].acc, to: dr[0].acc };
   else if (mode === 'transfer') ui.draft = { ...base, amount: String(dr[0].amount), from: cr[0].acc, to: dr[0].acc };
   else ui.draft = { ...base, lines: e.lines.map((l) => ({ side: l.side, acc: l.acc, amount: String(l.amount) })) };
@@ -1152,6 +1250,18 @@ const ACTIONS = {
     render();
   },
   save: () => saveEntry(),
+  'adv-toggle': () => {
+    ui.draft.advOn = !ui.draft.advOn;
+    render();
+    if (ui.draft.advOn) $('#f-adv')?.focus();
+  },
+  'adv-set': (el) => {
+    const total = L.parseAmount(ui.draft.amount);
+    if (!total) return toast('先に支払った金額を入力してください');
+    ui.draft.adv = String(el.dataset.val === 'half' ? Math.round(total / 2) : total);
+    render();
+  },
+  calc: (el) => calcSheet(el.dataset.field),
   'cancel-edit': () => {
     ui.editingId = null;
     ui.draft = newDraft(ui.mode);

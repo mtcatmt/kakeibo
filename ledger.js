@@ -326,13 +326,72 @@ export function accountInUse(state, id) {
   );
 }
 
+// 計算式（+ − × ÷ と括弧）の値を返す。数は0以上の整数だけ。式として正しくなければ null。
+// 例：「3000÷3」→ 1000、「1200+800×2」→ 2800（掛け算・割り算を先に計算する）
+export function evalExpr(src) {
+  const tokens = String(src).match(/\d+|[-+*/()]|\S/g) || [];
+  let i = 0;
+  const peek = () => tokens[i];
+  function expr() {
+    let v = term();
+    while (peek() === '+' || peek() === '-') v = tokens[i++] === '+' ? v + term() : v - term();
+    return v;
+  }
+  function term() {
+    let v = factor();
+    while (peek() === '*' || peek() === '/') {
+      if (tokens[i++] === '*') v *= factor();
+      else {
+        const d = factor();
+        if (d === 0) throw new Error('0で割れません');
+        v /= d;
+      }
+    }
+    return v;
+  }
+  function factor() {
+    const t = tokens[i++];
+    if (t === '(') {
+      const v = expr();
+      if (tokens[i++] !== ')') throw new Error('括弧');
+      return v;
+    }
+    if (/^\d+$/.test(t || '')) return Number(t);
+    throw new Error('式');
+  }
+  try {
+    const v = expr();
+    return i === tokens.length && Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 // 全角数字・カンマ・円記号を含む入力を整数にする。不正なら null。
+// 計算式も受け付け、結果の1円未満は四捨五入する（例：「1000÷3」→ 333）。
 export function parseAmount(str) {
   if (str == null) return null;
   const s = String(str)
-    .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[０-９（）＋]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[−ー－]/g, '-')
+    .replace(/[×xX＊]/g, '*')
+    .replace(/[÷／]/g, '/')
     .replace(/[,，¥￥円\s]/g, '');
-  if (!/^\d+$/.test(s)) return null;
-  const n = Number(s);
+  if (!/^[\d+\-*/()]+$/.test(s)) return null;
+  const v = /^\d+$/.test(s) ? Number(s) : evalExpr(s);
+  if (v == null) return null;
+  const n = Math.round(v);
   return n > 0 && Number.isSafeInteger(n) ? n : null;
+}
+
+// 立替を含む支出の仕訳。total のうち advance 円が立替（ほかの人の分）。
+// 借方 費用（自分の分）・借方 立替金（ほかの人の分）／貸方 支払元（全額）。全額が立替なら費用の行は作らない。
+export const ADVANCE_NAME = '立替金';
+export function buildAdvanceLines(f, total, advance) {
+  const own = total - advance;
+  return [
+    ...(own > 0 ? [{ acc: f.acc, side: 'dr', amount: own }] : []),
+    { acc: f.advAcc, side: 'dr', amount: advance },
+    { acc: f.from, side: 'cr', amount: total },
+  ];
 }

@@ -92,6 +92,34 @@ p { margin: 6px 0; }
   flex: 1; min-width: 0; border: 0; background: none; outline: none; font-size: 36px; font-weight: 600; padding: 4px 0;
   font-variant-numeric: tabular-nums;
 }
+.amount .calc-btn, .adv-row .calc-btn {
+  flex: none; border: 1px solid var(--line); background: var(--card-2); color: var(--text-2); border-radius: 10px;
+  padding: 8px 10px; font-size: 14px; letter-spacing: 1px;
+}
+.adv { margin-top: 14px; padding: 10px 12px; border-radius: 12px; background: var(--card-2); }
+.adv-head { display: flex; align-items: center; justify-content: space-between; }
+.adv-head .field-label { margin: 0; }
+.adv-row { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--line); margin: 6px 0 10px; }
+.adv-row span { font-size: 20px; color: var(--muted); }
+.adv-row input {
+  flex: 1; min-width: 0; border: 0; background: none; outline: none; font-size: 24px; font-weight: 600; padding: 4px 0;
+  font-variant-numeric: tabular-nums;
+}
+.adv-quick { justify-content: flex-start; }
+.btn-row.adv-quick button { flex: none; margin-top: 0; }
+.adv .hint { margin: 8px 0 0; }
+.adv-open { margin-top: 14px; }
+.calc-disp { text-align: right; padding: 8px 4px 12px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+.calc-expr { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; word-break: break-all; min-height: 36px; }
+.calc-res { font-size: 15px; color: var(--text-2); min-height: 20px; }
+.calc-keys { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.calc-keys button {
+  height: 52px; border: 0; border-radius: 12px; background: var(--card-2); color: var(--text); font-size: 22px;
+  font-variant-numeric: tabular-nums; touch-action: manipulation;
+}
+.calc-keys button:active { background: var(--line); }
+.calc-keys .op { color: var(--accent); }
+.calc-keys .ok { grid-column: span 3; background: var(--accent); color: var(--accent-text); font-size: 17px; font-weight: 600; }
 .field-label { display: block; font-size: 13px; color: var(--text-2); margin: 10px 0 6px; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip {

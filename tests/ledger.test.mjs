@@ -167,3 +167,43 @@ test('期間キーと金額の解析', () => {
   assert.equal(L.parseAmount('12.5'), null);
   assert.equal(L.parseAmount('0'), null);
 });
+
+test('金額欄の計算式', () => {
+  assert.equal(L.parseAmount('3000÷3'), 1000);
+  assert.equal(L.parseAmount('1200+800×2'), 2800);
+  assert.equal(L.parseAmount('(1200+800)*2'), 4000);
+  assert.equal(L.parseAmount('１０００－２００'), 800);
+  assert.equal(L.parseAmount('1000/3'), 333); // 1円未満は四捨五入
+  assert.equal(L.parseAmount('1000/0'), null);
+  assert.equal(L.parseAmount('500-800'), null); // 0円以下
+  assert.equal(L.parseAmount('1000+'), null);
+  assert.equal(L.evalExpr('2*(3+4)'), 14);
+});
+
+test('立替を含む支出：自分の分は費用、ほかの人の分は立替金（資産）', () => {
+  const s = L.defaultState();
+  s.accounts.push({ id: 'adv', name: '立替金', type: 'asset', archived: false });
+  const lines = L.buildAdvanceLines({ acc: 'food', from: 'card', advAcc: 'adv' }, 3000, 2000);
+  assert.deepEqual(lines, [
+    { acc: 'food', side: 'dr', amount: 1000 },
+    { acc: 'adv', side: 'dr', amount: 2000 },
+    { acc: 'card', side: 'cr', amount: 3000 },
+  ]);
+  assert.equal(L.validateEntry({ date: '2026-11-12', lines }, s.accounts), null);
+  s.entries = [
+    { id: 'a', date: '2026-11-12', kind: 'expense', lines },
+    // 返金（現金）：振替 立替金 → 現金
+    { id: 'b', date: '2026-11-13', kind: 'transfer', lines: L.buildSimpleLines('transfer', { from: 'adv', to: 'cash' }, 2000) },
+  ];
+  assert.equal(L.balances(s, '2026-11-12').adv, 2000);
+  const bal = L.balances(s);
+  assert.equal(bal.adv, 0);
+  assert.equal(bal.cash, 2000);
+  assert.equal(bal.card, 3000);
+  assert.equal(L.summarize(s).get('2026-11').expenseTotal, 1000);
+  // 全額が立替なら費用の行はない
+  assert.deepEqual(L.buildAdvanceLines({ acc: null, from: 'cash', advAcc: 'adv' }, 500, 500), [
+    { acc: 'adv', side: 'dr', amount: 500 },
+    { acc: 'cash', side: 'cr', amount: 500 },
+  ]);
+});
