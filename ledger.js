@@ -326,10 +326,10 @@ export function accountInUse(state, id) {
   );
 }
 
-// 計算式（+ − × ÷ と括弧）の値を返す。数は0以上の整数だけ。式として正しくなければ null。
+// 計算式（+ − × ÷ と括弧）の値を返す。数は0以上（小数を含む）。式として正しくなければ null。
 // 例：「3000÷3」→ 1000、「1200+800×2」→ 2800（掛け算・割り算を先に計算する）
 export function evalExpr(src) {
-  const tokens = String(src).match(/\d+|[-+*/()]|\S/g) || [];
+  const tokens = String(src).match(/\d+(?:\.\d+)?|[-+*/()]|\S/g) || [];
   let i = 0;
   const peek = () => tokens[i];
   function expr() {
@@ -356,7 +356,7 @@ export function evalExpr(src) {
       if (tokens[i++] !== ')') throw new Error('括弧');
       return v;
     }
-    if (/^\d+$/.test(t || '')) return Number(t);
+    if (/^\d+(?:\.\d+)?$/.test(t || '')) return Number(t);
     throw new Error('式');
   }
   try {
@@ -368,16 +368,16 @@ export function evalExpr(src) {
 }
 
 // 全角数字・カンマ・円記号を含む入力を整数にする。不正なら null。
-// 計算式も受け付け、結果の1円未満は四捨五入する（例：「1000÷3」→ 333）。
+// 計算式と小数も受け付け、結果の1円未満は四捨五入する（例：「1000÷3」→ 333、「12.5」→ 13）。
 export function parseAmount(str) {
   if (str == null) return null;
   const s = String(str)
-    .replace(/[０-９（）＋]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[０-９（）＋．]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
     .replace(/[−ー－]/g, '-')
     .replace(/[×xX＊]/g, '*')
     .replace(/[÷／]/g, '/')
     .replace(/[,，¥￥円\s]/g, '');
-  if (!/^[\d+\-*/()]+$/.test(s)) return null;
+  if (!/^[\d.+\-*/()]+$/.test(s)) return null;
   const v = /^\d+$/.test(s) ? Number(s) : evalExpr(s);
   if (v == null) return null;
   const n = Math.round(v);
@@ -394,4 +394,24 @@ export function buildAdvanceLines(f, total, advance) {
     { acc: f.advAcc, side: 'dr', amount: advance },
     { acc: f.from, side: 'cr', amount: total },
   ];
+}
+
+// 割り勘の立替の金額。total 円を people 人（自分を含む）で割り勘したときの、ほかの人の分の合計。
+// total ×（people − 1）÷ people の1円未満を切り捨てる（自分の分は total − 立替 なので、端数は自分の分になる）。
+export function splitAdvance(total, people) {
+  return Math.floor((total * (people - 1)) / people);
+}
+
+// 履歴の検索・絞り込み。q：メモ・科目名・金額に含まれる文字、acc・src：仕訳のどこかに含まれる科目のid
+export function filterEntries(state, { q = '', acc = '', src = '' } = {}) {
+  const names = new Map(state.accounts.map((a) => [a.id, a.name.toLowerCase()]));
+  const words = String(q).toLowerCase().replace(/[,，¥￥円]/g, '').split(/\s+/).filter(Boolean);
+  return state.entries.filter((e) => {
+    if (acc && !e.lines.some((l) => l.acc === acc)) return false;
+    if (src && !e.lines.some((l) => l.acc === src)) return false;
+    const text = [e.memo || '', ...e.lines.map((l) => names.get(l.acc) || ''), ...e.lines.map((l) => String(l.amount))]
+      .join('\n')
+      .toLowerCase();
+    return words.every((w) => text.includes(w));
+  });
 }

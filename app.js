@@ -1,7 +1,7 @@
 import * as L from './ledger.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -14,6 +14,7 @@ const ui = {
   draft: null,
   editingId: null,
   histMonth: L.monthOf(L.todayStr()),
+  hist: { q: '', acc: '', src: '', all: true, open: false }, // 履歴の検索・絞り込み（all：すべての月から探す）
   chartBy: 'month',
   chartKey: { month: L.monthOf(L.todayStr()), year: L.yearOf(L.todayStr()) },
   bannerHidden: false,
@@ -113,12 +114,18 @@ const MODES = [
   ['journal', '仕訳'],
 ];
 
+// 立替欄の初期値。割り勘の人数と、割り勘か金額の指定かは、前回の入力を使う
+function advDefaults() {
+  const last = state.settings.last || {};
+  return { advOn: false, advMode: last.advMode || 'split', people: last.people || 2, adv: '', advAcc: null };
+}
+
 function newDraft(mode) {
   const last = state.settings.last || {};
   const base = { date: ui.draft?.date || today(), memo: '' };
   switch (mode) {
     case 'expense':
-      return { ...base, amount: '', acc: null, from: last.expenseFrom || 'cash', advOn: false, adv: '', advAcc: null };
+      return { ...base, amount: '', acc: null, from: last.expenseFrom || 'cash', ...advDefaults() };
     case 'income':
       return { ...base, amount: '', acc: null, to: last.incomeTo || 'bank' };
     case 'transfer':
@@ -214,22 +221,33 @@ function viewInput() {
   const m = ui.mode;
   let body = '';
   if (m !== 'journal') {
-    body += `<div class="amount"><span>¥</span><input id="f-amount" data-field="amount" inputmode="numeric" autocomplete="off" placeholder="0" value="${esc(d.amount)}" aria-label="金額">${calcBtn('amount')}</div>`;
+    body += amountField('amount', '金額');
   }
   if (m === 'expense') {
     body += `<div class="field-label">科目</div>${chips('acc', ['expense'], d.acc, true)}`;
     body += `<div class="field-label">支払元</div>${chips('from', ['asset', 'liability'], d.from)}`;
-    body += d.advOn
-      ? `<div class="adv">
+    if (d.advOn) {
+      const split = d.advMode === 'split';
+      body += `<div class="adv">
           <div class="adv-head"><span class="field-label">うち立替（ほかの人の分）</span><button type="button" class="link" data-act="adv-toggle">立替をやめる</button></div>
-          <div class="adv-row"><span>¥</span><input id="f-adv" data-field="adv" inputmode="numeric" autocomplete="off" placeholder="0" value="${esc(d.adv)}" aria-label="立替の金額">${calcBtn('adv')}</div>
-          <div class="btn-row adv-quick">
-            <button type="button" class="chip" data-act="adv-set" data-val="half">半分</button>
-            <button type="button" class="chip" data-act="adv-set" data-val="all">全額</button>
+          <div class="seg seg-sm">
+            <button type="button" class="${split ? 'on' : ''}" data-act="adv-mode" data-val="split">割り勘</button>
+            <button type="button" class="${split ? '' : 'on'}" data-act="adv-mode" data-val="amount">金額を指定</button>
           </div>
+          ${
+            split
+              ? `<div class="stepper"><span class="stepper-label">人数（自分を含む）</span>
+                  <button type="button" class="icon-btn" data-act="people" data-val="-1" aria-label="1人減らす"${d.people <= 2 ? ' disabled' : ''}>−</button>
+                  <span class="stepper-val">${d.people}人</span>
+                  <button type="button" class="icon-btn" data-act="people" data-val="1" aria-label="1人増やす"${d.people >= 30 ? ' disabled' : ''}>＋</button></div>`
+              : `${amountField('adv', '立替の金額', 'amount-sm')}
+                <div class="btn-row adv-quick"><button type="button" class="chip" data-act="adv-set" data-val="all">全額</button></div>`
+          }
           <p class="hint" id="adv-note"></p>
-        </div>`
-      : `<button type="button" class="chip chip-add adv-open" data-act="adv-toggle">＋ 立替を含める（ほかの人の分もまとめて払った）</button>`;
+        </div>`;
+    } else {
+      body += `<button type="button" class="chip chip-add adv-open" data-act="adv-toggle">＋ 立替を含める（割り勘・ほかの人の分もまとめて払った）</button>`;
+    }
   } else if (m === 'income') {
     body += `<div class="field-label">科目</div>${chips('acc', ['income'], d.acc)}`;
     body += `<div class="field-label">入金先</div>${chips('to', ['asset'], d.to)}`;
@@ -278,8 +296,9 @@ function draftLines() {
   const amount = L.parseAmount(d.amount);
   if (!amount) return { error: '金額を入力してください' };
   if (ui.mode === 'expense' && d.advOn) {
-    const adv = L.parseAmount(d.adv);
-    if (!adv) return { error: '立替の金額を入力してください' };
+    const split = d.advMode === 'split';
+    const adv = split ? L.splitAdvance(amount, d.people) : L.parseAmount(d.adv);
+    if (!adv) return { error: split ? '金額が少ないため、立替の金額が0円になります' : '立替の金額を入力してください' };
     if (adv > amount) return { error: '立替の金額が支払った金額を超えています' };
     if (adv < amount && !d.acc) return { error: '科目を選んでください' };
     if (!d.from) return { error: '支払元を選んでください' };
@@ -313,48 +332,61 @@ function updatePreview() {
   const note = $('#adv-note');
   if (note) {
     const name = accName(ui.draft.advAcc || advanceAccId());
+    const n = ui.draft.people;
+    const who = ui.draft.advMode === 'split' ? `（${n - 1}人分、1人あたり ${yen(Math.floor(L.parseAmount(ui.draft.amount) / n))}）` : '';
     note.textContent = r.adv
-      ? `自分の分 ${yen(r.own)} を支出に、立替 ${yen(r.adv)} を「${name}」（資産）に記録します。返ってきたら振替で、移動元＝${name}。`
+      ? `自分の分 ${yen(r.own)} を支出に、立替 ${yen(r.adv)}${who}を「${name}」（資産）に記録します。返ってきたら振替で、移動元＝${name}。`
       : '';
   }
 }
 
-// 金額欄の横の電卓ボタン
-const calcBtn = (field) => `<button type="button" class="calc-btn" data-act="calc" data-field="${field}" aria-label="電卓">＋−×÷</button>`;
+// 金額欄。タップすると電卓が開く（iPhoneのキーボードは出さない）
+function amountField(field, label, cls = '') {
+  const n = L.parseAmount(ui.draft[field]);
+  return `<button type="button" class="amount ${cls}" data-act="calc" data-field="${field}" aria-label="${label}（電卓で入力）">
+    <span class="amount-yen">¥</span><span class="amount-val${n ? '' : ' ph'}">${n ? n.toLocaleString('ja-JP') : '0'}</span>
+    <span class="calc-hint" aria-hidden="true">＋−×÷</span></button>`;
+}
+
+let calcCtl = null; // 表示中の電卓の操作（パソコンのキーボードから押す）
 
 // 電卓。決定すると、計算結果（1円未満は四捨五入）を入力欄に入れる
 function calcSheet(field) {
-  let expr = String(ui.draft[field] || '')
-    .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
-    .replace(/×/g, '*').replace(/÷/g, '/').replace(/[−＋]/g, (c) => (c === '−' ? '-' : '+'))
-    .replace(/[^\d+\-*/]/g, '');
+  const n0 = L.parseAmount(ui.draft[field]);
+  let expr = n0 ? String(n0) : '';
+  let fresh = !!expr; // 開いた直後に数字を押したら、元の金額を置き換える
+  const ops = '+-*/';
   const show = (x) => x.replace(/\*/g, '×').replace(/\//g, '÷').replace(/-/g, '−').replace(/\+/g, '＋');
-  const keys = ['C', 'back', '/', '*', '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '00', '0'];
+  const keys = ['C', 'back', '/', '*', '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '00', '0', '.'];
   const label = { C: 'C', back: '⌫', '/': '÷', '*': '×', '-': '−', '+': '＋' };
   openSheet(`
     <h2>電卓</h2>
     <div class="calc-disp"><div class="calc-expr" id="calc-expr"></div><div class="calc-res" id="calc-res"></div></div>
     <div class="calc-keys" id="calc-keys">
-      ${keys.map((k) => `<button type="button" data-key="${k}" class="${/\d/.test(k) ? '' : 'op'}">${label[k] || k}</button>`).join('')}
+      ${keys.map((k) => `<button type="button" data-key="${k}" class="${/\d/.test(k) || k === '.' ? '' : 'op'}" aria-label="${k === 'back' ? '1文字消す' : k}">${label[k] || k}</button>`).join('')}
       <button type="button" data-key="ok" class="ok">決定</button>
     </div>
     <p class="hint">1円未満は四捨五入します。</p>
     <div class="sheet-actions"><button type="button" class="ghost" data-act="close-sheet">閉じる</button></div>`);
-  const ops = '+-*/';
-  const trimmed = () => expr.replace(/[-+*/]$/, '');
+  const trimmed = () => expr.replace(/[-+*/.]+$/, '');
+  const curNum = () => expr.split(/[-+*/]/).at(-1);
+  const fmt = (v) => (Number.isInteger(v) ? yen(v) : `${v.toLocaleString('ja-JP', { maximumFractionDigits: 2 })}（${yen(Math.round(v))}）`);
   const update = () => {
     $('#calc-expr').textContent = show(expr) || '0';
-    const v = L.evalExpr(trimmed());
-    $('#calc-res').textContent = v == null || !/[-+*/]/.test(trimmed()) ? '' : '＝ ' + yen(Math.round(v));
+    const t = trimmed();
+    const v = L.evalExpr(t);
+    $('#calc-res').textContent = v == null || !/[-+*/.]/.test(t) ? '' : '＝ ' + fmt(v);
   };
-  $('#calc-keys').onclick = (ev) => {
-    const k = ev.target.closest('[data-key]')?.dataset.key;
-    if (!k) return;
+  const press = (k) => {
     if (k === 'C') expr = '';
     else if (k === 'back') expr = expr.slice(0, -1);
     else if (ops.includes(k)) {
       if (!expr) return;
-      expr = ops.includes(expr.at(-1)) ? expr.slice(0, -1) + k : expr + k;
+      expr = expr.replace(/[-+*/.]+$/, '') + k;
+    } else if (k === '.') {
+      if (fresh) expr = '0.';
+      else if (curNum().includes('.')) return;
+      else expr += curNum() ? '.' : '0.';
     } else if (k === 'ok') {
       const n = L.parseAmount(trimmed());
       if (!n) return toast('計算結果が1円以上になる式を入力してください');
@@ -362,9 +394,21 @@ function calcSheet(field) {
       closeSheet();
       render();
       return;
-    } else expr += k;
+    } else {
+      if (fresh) expr = '';
+      if (k === '00' && !curNum()) return;
+      if (curNum() === '0') expr = expr.slice(0, -1); // 先頭の0は置き換える
+      expr += k;
+    }
+    fresh = false;
     update();
   };
+  $('#calc-keys').onclick = (ev) => {
+    const k = ev.target.closest('[data-key]')?.dataset.key;
+    if (k) press(k);
+  };
+  calcCtl = { press };
+  $('#sheet').addEventListener('close', () => (calcCtl = null), { once: true });
   update();
 }
 
@@ -402,6 +446,7 @@ async function saveEntry() {
     if (ui.mode === 'expense') last.expenseFrom = d.from;
     if (ui.mode === 'income') last.incomeTo = d.to;
     if (ui.mode === 'transfer') Object.assign(last, { transferFrom: d.from, transferTo: d.to });
+    if (ui.mode === 'expense' && r.adv) Object.assign(last, { advMode: d.advMode, people: d.people });
     if (wasEditing) {
       ui.editingId = null;
       ui.tab = 'history';
@@ -433,7 +478,14 @@ function startEdit(id) {
   if (advLine && ownLine) {
     ui.mode = 'expense';
     ui.editingId = id;
-    ui.draft = { date: e.date, memo: e.memo || '', amount: String(cr[0].amount), acc: ownLine.acc, from: cr[0].acc, advOn: true, adv: String(advLine.amount), advAcc: advLine.acc };
+    // 割り勘の式（支払額×（人数−1）÷人数の切り捨て）に合う人数があれば、割り勘として開く
+    const total = cr[0].amount;
+    let people = 0;
+    for (let n = 2; n <= 30 && !people; n++) if (L.splitAdvance(total, n) === advLine.amount) people = n;
+    ui.draft = {
+      date: e.date, memo: e.memo || '', amount: String(total), acc: ownLine.acc, from: cr[0].acc,
+      advOn: true, advMode: people ? 'split' : 'amount', people: people || 2, adv: String(advLine.amount), advAcc: advLine.acc,
+    };
     closeSheet();
     ui.tab = 'input';
     render();
@@ -442,7 +494,7 @@ function startEdit(id) {
   ui.mode = mode;
   ui.editingId = id;
   const base = { date: e.date, memo: e.memo || '' };
-  if (mode === 'expense') ui.draft = { ...base, amount: String(dr[0].amount), acc: dr[0].acc, from: cr[0].acc, advOn: false, adv: '', advAcc: null };
+  if (mode === 'expense') ui.draft = { ...base, amount: String(dr[0].amount), acc: dr[0].acc, from: cr[0].acc, ...advDefaults() };
   else if (mode === 'income') ui.draft = { ...base, amount: String(dr[0].amount), acc: cr[0].acc, to: dr[0].acc };
   else if (mode === 'transfer') ui.draft = { ...base, amount: String(dr[0].amount), from: cr[0].acc, to: dr[0].acc };
   else ui.draft = { ...base, lines: e.lines.map((l) => ({ side: l.side, acc: l.acc, amount: String(l.amount) })) };
@@ -505,19 +557,31 @@ function statRow(sum) {
   </div>`;
 }
 
-function viewHistory() {
+const histFiltered = () => !!(ui.hist.q.trim() || ui.hist.acc || ui.hist.src);
+
+// 履歴の一覧（検索・絞り込みの条件があれば、その結果）
+function histBody() {
+  const h = ui.hist;
+  const filtered = histFiltered();
+  const allMonths = filtered && h.all;
   const m = ui.histMonth;
-  const sum = L.summarize(state, 'month').get(m) || L.emptySummary();
-  const list = state.entries
-    .filter((e) => L.monthOf(e.date) === m)
+  const list = (filtered ? L.filterEntries(state, h) : state.entries)
+    .filter((e) => allMonths || L.monthOf(e.date) === m)
     .sort((a, b) => (a.date === b.date ? (b.createdAt || 0) - (a.createdAt || 0) : a.date < b.date ? 1 : -1));
+  const sum = filtered
+    ? [...L.summarize({ ...state, entries: list }, 'year').values()].reduce(
+        (t, x) => ({ incomeTotal: t.incomeTotal + x.incomeTotal, expenseTotal: t.expenseTotal + x.expenseTotal }),
+        { incomeTotal: 0, expenseTotal: 0 },
+      )
+    : L.summarize(state, 'month').get(m) || L.emptySummary();
   let html = '';
   let cur = null;
   for (const e of list) {
     if (e.date !== cur) {
       if (cur) html += '</ul>';
       cur = e.date;
-      html += `<h3 class="day">${dateLabel(e.date)}</h3><ul class="entries">`;
+      const year = allMonths && L.yearOf(e.date) !== L.yearOf(today()) ? `${L.yearOf(e.date)}年` : '';
+      html += `<h3 class="day">${year}${dateLabel(e.date)}</h3><ul class="entries">`;
     }
     const d = describe(e);
     const sign = d.cls === 'out' ? '−' : d.cls === 'in' ? '+' : '';
@@ -528,11 +592,55 @@ function viewHistory() {
       <span class="entry-amt ${d.cls}">${sign}${yen(Math.abs(d.amount))}</span></button></li>`;
   }
   if (cur) html += '</ul>';
-  if (!list.length) html = '<p class="empty">この月の記録はありません</p>';
+  if (!list.length) html = `<p class="empty">${filtered ? '条件に合う記録はありません' : 'この月の記録はありません'}</p>`;
+  const scope = filtered
+    ? `<div class="hscope">
+        <div class="seg seg-sm">
+          <button type="button" class="${h.all ? 'on' : ''}" data-act="hist-all" data-val="1">すべての月</button>
+          <button type="button" class="${h.all ? '' : 'on'}" data-act="hist-all" data-val="0">月ごと</button>
+        </div>
+        <span class="hcount">${list.length}件</span>
+        <button type="button" class="link" data-act="hist-clear">条件を消す</button>
+      </div>`
+    : '';
+  return `${scope}${allMonths ? '' : monthNav(m, 'month', 'hist-nav')}${statRow(sum)}<section class="card list">${html}</section>`;
+}
+
+function renderHistBody() {
+  const el = $('#hist-body');
+  if (el) el.innerHTML = histBody();
+}
+
+function viewHistory() {
+  const h = ui.hist;
+  const nSel = (h.acc ? 1 : 0) + (h.src ? 1 : 0);
+  const opts = (types, sel) =>
+    '<option value="">すべて</option>' +
+    types
+      .map(
+        (t) =>
+          `<optgroup label="${L.TYPE_LABEL[t]}">` +
+          state.accounts
+            .filter((a) => a.type === t)
+            .map((a) => `<option value="${a.id}"${a.id === sel ? ' selected' : ''}>${esc(a.name)}${a.archived ? '（非表示）' : ''}</option>`)
+            .join('') +
+          '</optgroup>',
+      )
+      .join('');
   return `<header class="top"><h1>履歴</h1></header>
-    ${monthNav(m, 'month', 'hist-nav')}
-    ${statRow(sum)}
-    <section class="card list">${html}</section>`;
+    <div class="hsearch">
+      <input type="search" data-hist="q" value="${esc(h.q)}" placeholder="メモ・科目名・金額で検索" autocomplete="off" enterkeyhint="search" aria-label="検索">
+      <button type="button" class="hfilter-btn${h.open || nSel ? ' on' : ''}" data-act="hist-filter" aria-expanded="${h.open}">絞り込み${nSel ? `（${nSel}）` : ''}</button>
+    </div>
+    ${
+      h.open
+        ? `<div class="hfilters">
+            <label class="field"><span class="field-label">科目（費用・収益）</span><select data-hist="acc">${opts(['expense', 'income'], h.acc)}</select></label>
+            <label class="field"><span class="field-label">支払元・入金先（資産・負債）</span><select data-hist="src">${opts(['asset', 'liability'], h.src)}</select></label>
+          </div>`
+        : ''
+    }
+    <div id="hist-body">${histBody()}</div>`;
 }
 
 function showDetail(id) {
@@ -1253,12 +1361,31 @@ const ACTIONS = {
   'adv-toggle': () => {
     ui.draft.advOn = !ui.draft.advOn;
     render();
-    if (ui.draft.advOn) $('#f-adv')?.focus();
   },
-  'adv-set': (el) => {
+  'adv-set': () => {
     const total = L.parseAmount(ui.draft.amount);
     if (!total) return toast('先に支払った金額を入力してください');
-    ui.draft.adv = String(el.dataset.val === 'half' ? Math.round(total / 2) : total);
+    ui.draft.adv = String(total);
+    render();
+  },
+  'adv-mode': (el) => {
+    ui.draft.advMode = el.dataset.val;
+    render();
+  },
+  people: (el) => {
+    ui.draft.people = Math.min(30, Math.max(2, ui.draft.people + Number(el.dataset.val)));
+    render();
+  },
+  'hist-filter': () => {
+    ui.hist.open = !ui.hist.open;
+    render();
+  },
+  'hist-all': (el) => {
+    ui.hist.all = el.dataset.val === '1';
+    renderHistBody();
+  },
+  'hist-clear': () => {
+    Object.assign(ui.hist, { q: '', acc: '', src: '', all: true });
     render();
   },
   calc: (el) => calcSheet(el.dataset.field),
@@ -1371,7 +1498,10 @@ document.addEventListener('click', (ev) => {
 
 document.addEventListener('input', (ev) => {
   const t = ev.target;
-  if (t.dataset.field && ui.tab === 'input') {
+  if (t.dataset.hist === 'q') {
+    ui.hist.q = t.value;
+    renderHistBody();
+  } else if (t.dataset.field && ui.tab === 'input') {
     ui.draft[t.dataset.field] = t.value;
     updatePreview();
   } else if (t.dataset.jfield) {
@@ -1387,6 +1517,9 @@ document.addEventListener('change', async (ev) => {
     const i = Number(t.closest('.jrow').dataset.i);
     ui.draft.lines[i][t.dataset.jfield] = t.value;
     updatePreview();
+  } else if (t.dataset.hist === 'acc' || t.dataset.hist === 'src') {
+    ui.hist[t.dataset.hist] = t.value;
+    render();
   } else if (t.dataset.setting) {
     await commit((s) => (s.settings[t.dataset.setting] = Number(t.value)));
   } else if (t.dataset.lock === 'after' && lock) {
@@ -1408,6 +1541,16 @@ window.addEventListener('resize', () => {
 });
 
 // 番号入力画面では、パソコンのキーボードの数字・Backspace・Esc も使える
+// 電卓では、パソコンのキーボードの数字・記号・Enter・Backspace も使える（Esc は画面を閉じる）
+document.addEventListener('keydown', (ev) => {
+  if (!calcCtl || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  const map = { Enter: 'ok', '=': 'ok', Backspace: 'back', Delete: 'C', c: 'C', x: '*' };
+  const k = /^[\d.+\-*/]$/.test(ev.key) ? ev.key : map[ev.key];
+  if (!k) return;
+  ev.preventDefault();
+  calcCtl.press(k);
+});
+
 document.addEventListener('keydown', (ev) => {
   if (!padCtl || ev.ctrlKey || ev.metaKey || ev.altKey) return;
   const k = /^\d$/.test(ev.key) ? ev.key : ev.key === 'Backspace' ? 'back' : ev.key === 'Escape' ? 'cancel' : null;

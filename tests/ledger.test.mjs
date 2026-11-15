@@ -164,7 +164,7 @@ test('期間キーと金額の解析', () => {
   assert.deepEqual(L.periodKeysEnding('2026', 'year', 2), ['2025', '2026']);
   assert.equal(L.parseAmount('１，２００円'), 1200);
   assert.equal(L.parseAmount('¥3,000'), 3000);
-  assert.equal(L.parseAmount('12.5'), null);
+  assert.equal(L.parseAmount('12.5'), 13); // 小数は四捨五入
   assert.equal(L.parseAmount('0'), null);
 });
 
@@ -206,4 +206,33 @@ test('立替を含む支出：自分の分は費用、ほかの人の分は立�
     { acc: 'adv', side: 'dr', amount: 500 },
     { acc: 'cash', side: 'cr', amount: 500 },
   ]);
+});
+
+test('電卓の小数', () => {
+  assert.equal(L.evalExpr('1.5*3'), 4.5);
+  assert.equal(L.parseAmount('980*1.1'), 1078);
+  assert.equal(L.parseAmount('1..5'), null);
+  assert.equal(L.parseAmount('0.4'), null); // 四捨五入して0円
+});
+
+test('割り勘の立替の金額は 支払額×(人数−1)÷人数 の切り捨て', () => {
+  assert.equal(L.splitAdvance(3000, 2), 1500);
+  assert.equal(L.splitAdvance(1000, 3), 666); // 自分の分は 334円
+  assert.equal(L.splitAdvance(1001, 2), 500);
+  assert.equal(L.splitAdvance(1, 2), 0);
+});
+
+test('履歴の検索・絞り込み', () => {
+  const s = withEntries([
+    { date: '2026-10-05', memo: 'サークルの飲み会', lines: L.buildSimpleLines('expense', { acc: 'food', from: 'card' }, 4000) },
+    { date: '2026-11-01', memo: '', lines: L.buildSimpleLines('expense', { acc: 'transport', from: 'emoney' }, 220) },
+    { date: '2026-11-02', memo: '昼', lines: L.buildSimpleLines('expense', { acc: 'food', from: 'cash' }, 680) },
+  ]);
+  const ids = (r) => r.map((e) => e.id);
+  assert.deepEqual(ids(L.filterEntries(s, { q: '飲み会' })), ['e0']);
+  assert.deepEqual(ids(L.filterEntries(s, { q: '食費' })), ['e0', 'e2']);
+  assert.deepEqual(ids(L.filterEntries(s, { acc: 'food', src: 'cash' })), ['e2']);
+  assert.deepEqual(ids(L.filterEntries(s, { src: 'emoney' })), ['e1']);
+  assert.deepEqual(ids(L.filterEntries(s, { q: '4,000' })), ['e0']);
+  assert.deepEqual(ids(L.filterEntries(s, { q: '食費 昼' })), ['e2']);
 });
