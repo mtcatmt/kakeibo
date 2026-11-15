@@ -16,11 +16,13 @@
   --sel: rgba(11, 11, 11, 0.05);
   --ring: rgba(11, 11, 11, 0.1);
 
-  /* グラフの系列色（8色）と「その他」 */
+  /* 費用の科目の色（16色）と「その他」。--s1〜--s8 は最初からある科目に並び順で使う */
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
   --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+  --s9: #12949f; --s10: #9a6a3c; --s11: #2f4b8f; --s12: #8aa81c;
+  --s13: #b0399c; --s14: #5bb8e8; --s15: #8c2f3f; --s16: #5d6b78;
   --s-other: #a9a8a1;
-  --s4-ink: #0b0b0b; /* 黄色の上の文字 */
+  --s4-ink: #0b0b0b; /* 明るい色（黄・黄緑・水色）の上の文字 */
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -41,6 +43,8 @@
     --ring: rgba(255, 255, 255, 0.1);
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
     --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+    --s9: #1ea8b3; --s10: #b07f52; --s11: #6683c9; --s12: #8fae22;
+    --s13: #c75cb5; --s14: #4aa9db; --s15: #c0566a; --s16: #8494a2;
     --s-other: #6b6a65;
     --s4-ink: #ffffff;
   }
@@ -263,6 +267,14 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
 .accs li.archived > span:first-child { color: var(--muted); }
 .acc-btns { white-space: nowrap; }
 .acc-btns .link { font-size: 14px; }
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); gap: 8px; margin: 4px 0 8px; }
+.swatch {
+  aspect-ratio: 1; width: 100%; border: 0; border-radius: 10px; cursor: pointer; touch-action: manipulation;
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+.swatch.on { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--text); }
+.color-preview { display: inline-flex; align-items: center; gap: 8px; font-size: 16px; margin: 4px 0 10px; }
+.color-preview .sw { width: 14px; height: 14px; }
 .add-acc { margin-top: 14px; grid-template-columns: 100px 1fr; }
 
 /* 上部の表示・下部のタブ・通知 */

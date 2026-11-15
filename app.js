@@ -1,7 +1,7 @@
 import * as L from './ledger.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -83,11 +83,47 @@ const isStandalone = () =>
   window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 
 // 費用の科目の色：「その他」は灰色、残りは並び順に8色
-function expenseColor(id) {
-  if (id === 'other_exp') return 'var(--s-other)';
-  const list = state.accounts.filter((a) => a.type === 'expense' && a.id !== 'other_exp');
-  const i = list.findIndex((a) => a.id === id);
-  return i >= 0 && i < 8 ? `var(--s${i + 1})` : 'var(--s-other)';
+// 費用の科目の色。選べる色は --s1〜--s16 と灰色（s-other）
+const PALETTE = [...Array.from({ length: 16 }, (_, i) => `s${i + 1}`), 's-other'];
+const LIGHT_COLORS = ['s4', 's12', 's14']; // 上に白い文字を置くと読みにくい色
+
+// 色の名前（s1 など）。科目に色が選ばれていればそれを、なければ並び順で --s1〜--s8 を使い、9つ目以降と「その他」は灰色
+function colorKey(id) {
+  const a = acc(id);
+  if (a?.color && PALETTE.includes(a.color)) return a.color;
+  if (id === 'other_exp') return 's-other';
+  const list = state.accounts.filter((x) => x.type === 'expense' && x.id !== 'other_exp');
+  const i = list.findIndex((x) => x.id === id);
+  return i >= 0 && i < 8 ? `s${i + 1}` : 's-other';
+}
+const expenseColor = (id) => `var(--${colorKey(id)})`;
+
+// まだほかの費用の科目に使われていない色のうち最初のもの（すべて使われていれば s9 から順に）
+function unusedColor(exceptId = null) {
+  const used = new Set(state.accounts.filter((a) => a.type === 'expense' && a.id !== exceptId).map((a) => colorKey(a.id)));
+  return PALETTE.find((k) => k !== 's-other' && !used.has(k)) || 's9';
+}
+
+// 色の選択肢。name を持つ hidden の input に選んだ色を入れる
+function swatchPicker(selected, name = 'acccolor') {
+  return `<input type="hidden" name="${name}" value="${selected}">
+    <div class="swatches" role="radiogroup" aria-label="色">${PALETTE.map(
+      (k) => `<button type="button" role="radio" aria-checked="${k === selected}" aria-label="${k === 's-other' ? '灰色' : `色${k.slice(1)}`}" class="swatch${k === selected ? ' on' : ''}" data-color="${k}" style="background:var(--${k})"></button>`,
+    ).join('')}</div>`;
+}
+// 色の選択肢をクリックで切り替える（root はフォームなど）
+function bindSwatches(root, onPick = () => {}) {
+  root.addEventListener('click', (ev) => {
+    const b = ev.target.closest('.swatch');
+    if (!b) return;
+    const box = b.parentElement;
+    box.querySelectorAll('.swatch').forEach((x) => {
+      x.classList.toggle('on', x === b);
+      x.setAttribute('aria-checked', String(x === b));
+    });
+    box.previousElementSibling.value = b.dataset.color;
+    onPick(b.dataset.color);
+  });
 }
 
 let toastTimer;
@@ -159,11 +195,12 @@ function chips(field, types, selected, withColor = false) {
 }
 
 // 科目を追加する。問題があればその内容を、なければ追加した科目を返す
-async function addAccount(type, name) {
+async function addAccount(type, name, color = null) {
   name = (name || '').trim();
   if (!name) return { error: '科目の名前を入力してください' };
   if (state.accounts.some((a) => a.type === type && a.name === name)) return { error: `${L.TYPE_LABEL[type]}に同じ名前の科目があります` };
   const account = { id: L.uid(), name, type, archived: false };
+  if (type === 'expense') account.color = PALETTE.includes(color) ? color : unusedColor(); // 色を選ばなければ、まだ使っていない色
   await commit((s) => s.accounts.push(account));
   return { account };
 }
@@ -180,6 +217,7 @@ function addAccountSheet(field, types) {
     <form id="acc-form">
       <label class="field"><span class="field-label">名前</span><input name="accname" autocomplete="off" placeholder="例：PayPay"></label>
       ${typeField}
+      <div id="acc-color"${types[0] === 'expense' ? '' : ' hidden'}><span class="field-label">色（入力画面・履歴・グラフで使う）</span>${swatchPicker(unusedColor())}</div>
       <p class="hint">名前の変更・非表示・削除は、設定画面の「勘定科目」からできます。</p>
       <div class="sheet-actions">
         <button type="button" class="ghost" data-act="close-sheet">閉じる</button>
@@ -187,10 +225,12 @@ function addAccountSheet(field, types) {
       </div>
     </form>`);
   const form = $('#acc-form');
+  bindSwatches(form);
+  form.elements.acctype.addEventListener?.('change', (ev) => ($('#acc-color').hidden = ev.target.value !== 'expense'));
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const f = form.elements;
-    const r = await addAccount(f.acctype.value, f.accname.value);
+    const r = await addAccount(f.acctype.value, f.accname.value, f.acccolor.value);
     if (r.error) return toast(r.error);
     ui.draft[field] = r.account.id; // 追加した科目を選んだ状態にする
     closeSheet();
@@ -720,7 +760,7 @@ function viewCharts() {
           const pct = (x.v / posTotal) * 100;
           const label = pct >= 12 ? `${Math.round(pct)}%` : '';
           const color = expenseColor(x.a.id);
-          const ink = color === 'var(--s4)' ? 'var(--s4-ink)' : '#fff';
+          const ink = LIGHT_COLORS.includes(colorKey(x.a.id)) ? 'var(--s4-ink)' : '#fff';
           return `<div class="segbar-part" style="flex:${x.v} 1 0;background:${color}" title="${esc(x.a.name)} ${yen(x.v)}（${Math.round(pct)}%）"><span style="color:${ink}">${label}</span></div>`;
         })
         .join('') +
@@ -835,6 +875,7 @@ function viewSettings() {
         .map(
           (a) => `<li class="${a.archived ? 'archived' : ''}"><span>${t === 'expense' ? `<span class="sw" style="background:${expenseColor(a.id)}"></span>` : ''}${esc(a.name)}${a.archived ? '（非表示）' : ''}</span>
           <span class="acc-btns">
+            ${t === 'expense' ? `<button type="button" class="link" data-act="acc-color" data-id="${a.id}">色</button>` : ''}
             <button type="button" class="link" data-act="acc-rename" data-id="${a.id}">名前</button>
             ${a.id === 'opening' ? '' : `<button type="button" class="link" data-act="acc-archive" data-id="${a.id}">${a.archived ? '表示' : '非表示'}</button>`}
             ${a.id === 'opening' || L.accountInUse(state, a.id) ? '' : `<button type="button" class="link danger-text" data-act="acc-delete" data-id="${a.id}">削除</button>`}
@@ -1448,6 +1489,29 @@ const ACTIONS = {
     const name = prompt('新しい名前', a.name);
     if (!name || !name.trim()) return;
     await commit(() => (a.name = name.trim()));
+  },
+  'acc-color': (el) => {
+    const a = acc(el.dataset.id);
+    const cur = colorKey(a.id);
+    openSheet(`
+      <h2>色の変更</h2>
+      <form id="color-form">
+        <p class="color-preview"><span class="sw" id="color-sw" style="background:var(--${cur})"></span>${esc(a.name)}</p>
+        ${swatchPicker(cur)}
+        <div class="sheet-actions">
+          <button type="button" class="ghost" data-act="close-sheet">閉じる</button>
+          <button type="submit" class="primary">保存</button>
+        </div>
+      </form>`);
+    const form = $('#color-form');
+    bindSwatches(form, (k) => ($('#color-sw').style.background = `var(--${k})`));
+    form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const k = form.elements.acccolor.value;
+      await commit(() => (a.color = k));
+      closeSheet();
+      toast(`「${a.name}」の色を変更しました`);
+    });
   },
   'acc-archive': async (el) => {
     const a = acc(el.dataset.id);

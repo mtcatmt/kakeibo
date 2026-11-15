@@ -1,4 +1,4 @@
-// SVG のグラフ（縦棒・折れ線）。色は style.css の --s1〜--s8 などを参照する。
+// SVG のグラフ（縦棒・折れ線）。色は style.css の --s1〜--s16 などを参照する。
 
 export function yen(n) {
   const s = Math.abs(Math.round(n)).toLocaleString('ja-JP');
