@@ -1,7 +1,8 @@
 import * as L from './ledger.js';
+import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.8.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -18,6 +19,7 @@ const ui = {
   chartBy: 'month',
   chartKey: { month: L.monthOf(L.todayStr()), year: L.yearOf(L.todayStr()) },
   bannerHidden: false,
+  cal: { view: 'month', month: L.monthOf(L.todayStr()), week: C.startOfWeek(L.todayStr()), q: '' }, // カレンダーの表示
 };
 
 // ---------------------------------------------------------------- 保存（IndexedDB）
@@ -150,6 +152,9 @@ const MODES = [
   ['journal', '仕訳'],
 ];
 
+// 予定の欄の初期値（何も選んでいない）
+const NO_EVENT = { eventId: null, newEvent: '', newEventOpen: false };
+
 // 立替欄の初期値。割り勘の人数と、割り勘か金額の指定かは、前回の入力を使う
 function advDefaults() {
   const last = state.settings.last || {};
@@ -158,7 +163,7 @@ function advDefaults() {
 
 function newDraft(mode) {
   const last = state.settings.last || {};
-  const base = { date: ui.draft?.date || today(), memo: '' };
+  const base = { date: ui.draft?.date || today(), memo: '', ...NO_EVENT };
   switch (mode) {
     case 'expense':
       return { ...base, amount: '', acc: null, from: last.expenseFrom || 'cash', ...advDefaults() };
@@ -314,6 +319,7 @@ function viewInput() {
       <label class="field"><span class="field-label">日付</span><input type="date" data-field="date" value="${esc(d.date)}"></label>
       <label class="field"><span class="field-label">メモ</span><input type="text" data-field="memo" value="${esc(d.memo)}" placeholder="任意"></label>
     </div>
+    ${eventPickAllowed() ? `<div id="ev-pick">${eventPicker()}</div>` : ''}
     <p class="preview" id="preview"></p>
     <button type="button" class="primary" data-act="save">${ui.editingId ? '変更を保存' : '保存'}</button>`;
 
@@ -464,6 +470,20 @@ async function saveEntry() {
   }
   const old = ui.editingId ? state.entries.find((e) => e.id === ui.editingId) : null;
   const keepKind = old && ['recurring', 'opening', 'valuation'].includes(old.kind) ? old.kind : null;
+  // つなぐ予定。新しい予定名が入っていれば、同じ日に同じ名前の予定にするか、保存のときに作る
+  let evId = null;
+  let newEv = null;
+  if (!keepKind) {
+    const title = d.newEventOpen ? (d.newEvent || '').trim() : '';
+    if (title) {
+      const same = C.findSameEvent(state.calendar, d.date, title);
+      if (same) evId = same.id;
+      else {
+        newEv = C.newEvent({ title, date: d.date, cat: C.catForLines(state.calendar, r.lines, state.accounts), src: 'ledger' });
+        evId = newEv.id;
+      }
+    } else if (d.eventId && state.calendar.events.some((x) => x.id === d.eventId && C.occursOn(x, d.date))) evId = d.eventId;
+  }
   const entry = {
     ...(old || {}),
     id: old ? old.id : L.uid(),
@@ -475,11 +495,16 @@ async function saveEntry() {
     createdAt: old ? old.createdAt : Date.now(),
     updatedAt: Date.now(),
   };
+  if (!keepKind) {
+    if (evId) entry.eventId = evId;
+    else delete entry.eventId;
+  }
   const err = L.validateEntry(entry, state.accounts);
   if (err) return toast(err);
 
   const wasEditing = !!old;
   await commit((s) => {
+    if (newEv) C.addEvent(s.calendar, newEv);
     if (old) s.entries[s.entries.indexOf(old)] = entry;
     else s.entries.push(entry);
     const last = s.settings.last;
@@ -498,7 +523,7 @@ async function saveEntry() {
       ui.draft = { ...newDraft(ui.mode), ...keep };
     }
   });
-  toast((wasEditing ? '変更しました：' : '保存しました：') + linesText(entry.lines));
+  toast((wasEditing ? '変更しました：' : '保存しました：') + linesText(entry.lines) + (newEv ? `（予定「${newEv.title}」を作りました）` : ''));
 }
 
 function startEdit(id) {
@@ -523,7 +548,7 @@ function startEdit(id) {
     let people = 0;
     for (let n = 2; n <= 30 && !people; n++) if (L.splitAdvance(total, n) === advLine.amount) people = n;
     ui.draft = {
-      date: e.date, memo: e.memo || '', amount: String(total), acc: ownLine.acc, from: cr[0].acc,
+      date: e.date, memo: e.memo || '', eventId: e.eventId || null, newEvent: '', newEventOpen: false, amount: String(total), acc: ownLine.acc, from: cr[0].acc,
       advOn: true, advMode: people ? 'split' : 'amount', people: people || 2, adv: String(advLine.amount), advAcc: advLine.acc,
     };
     closeSheet();
@@ -533,7 +558,7 @@ function startEdit(id) {
   }
   ui.mode = mode;
   ui.editingId = id;
-  const base = { date: e.date, memo: e.memo || '' };
+  const base = { date: e.date, memo: e.memo || '', ...NO_EVENT, eventId: e.eventId || null };
   if (mode === 'expense') ui.draft = { ...base, amount: String(dr[0].amount), acc: dr[0].acc, from: cr[0].acc, ...advDefaults() };
   else if (mode === 'income') ui.draft = { ...base, amount: String(dr[0].amount), acc: cr[0].acc, to: dr[0].acc };
   else if (mode === 'transfer') ui.draft = { ...base, amount: String(dr[0].amount), from: cr[0].acc, to: dr[0].acc };
@@ -576,6 +601,17 @@ function describe(e) {
   if (e.kind === 'opening') return { title: '開始残高', sub: names('dr') + ' ' + names('cr'), amount: total, cls: 'neutral' };
   if (exp === 0 && inc === 0) return { title: `${names('cr')} → ${names('dr')}`, sub: '振替', amount: total, cls: 'neutral' };
   return { title: '仕訳', sub: `収益 ${yen(inc)} ／ 費用 ${yen(exp)}`, amount: inc - exp, cls: inc - exp >= 0 ? 'in' : 'out' };
+}
+
+// 履歴の一覧の1行（カレンダーの日の詳細でも使う）
+function entryRow(e) {
+  const d = describe(e);
+  const sign = d.cls === 'out' ? '−' : d.cls === 'in' ? '+' : '';
+  return `<li><button type="button" class="entry" data-act="detail" data-id="${e.id}">
+      <span class="sw ${d.color ? '' : 'sw-none'}" style="${d.color ? `background:${d.color}` : ''}"></span>
+      <span class="entry-main"><span class="entry-title">${esc(d.title)}${e.kind === 'recurring' ? '<span class="badge">自動入力</span>' : ''}</span>
+      <span class="entry-sub">${esc([d.sub, e.memo].filter(Boolean).join('　'))}</span></span>
+      <span class="entry-amt ${d.cls}">${sign}${yen(Math.abs(d.amount))}</span></button></li>`;
 }
 
 const KIND_LABEL = { expense: '支出', income: '収入', transfer: '振替', journal: '仕訳', recurring: '自動入力', opening: '開始残高', valuation: '評価額の更新' };
@@ -623,13 +659,7 @@ function histBody() {
       const year = allMonths && L.yearOf(e.date) !== L.yearOf(today()) ? `${L.yearOf(e.date)}年` : '';
       html += `<h3 class="day">${year}${dateLabel(e.date)}</h3><ul class="entries">`;
     }
-    const d = describe(e);
-    const sign = d.cls === 'out' ? '−' : d.cls === 'in' ? '+' : '';
-    html += `<li><button type="button" class="entry" data-act="detail" data-id="${e.id}">
-      <span class="sw ${d.color ? '' : 'sw-none'}" style="${d.color ? `background:${d.color}` : ''}"></span>
-      <span class="entry-main"><span class="entry-title">${esc(d.title)}${e.kind === 'recurring' ? '<span class="badge">自動入力</span>' : ''}</span>
-      <span class="entry-sub">${esc([d.sub, e.memo].filter(Boolean).join('　'))}</span></span>
-      <span class="entry-amt ${d.cls}">${sign}${yen(Math.abs(d.amount))}</span></button></li>`;
+    html += entryRow(e);
   }
   if (cur) html += '</ul>';
   if (!list.length) html = `<p class="empty">${filtered ? '条件に合う記録はありません' : 'この月の記録はありません'}</p>`;
@@ -696,6 +726,7 @@ function showDetail(id) {
   openSheet(`
     <h2>${dateLabel(e.date)}　${KIND_LABEL[e.kind] || '仕訳'}</h2>
     ${e.memo ? `<p>${esc(e.memo)}</p>` : ''}
+    ${linkedEventLine(e)}
     <table class="jtable"><thead><tr><th colspan="2">借方</th><th colspan="2">貸方</th></tr></thead><tbody>${rows.join('')}</tbody></table>
     <div class="sheet-actions">
       <button type="button" class="danger" data-act="delete" data-id="${e.id}">削除</button>
@@ -1157,8 +1188,17 @@ async function importBackup(file) {
   const err = L.validateState(s);
   if (err) return toast('このファイルは使えません：' + err);
   const when = data.exportedAt ? new Date(data.exportedAt).toLocaleString('ja-JP') : '日時不明';
-  if (!confirm(`${when}に書き出されたバックアップ（仕訳${s.entries.length}件）で、今のデータ（仕訳${state.entries.length}件）を置き換えます。よろしいですか？`)) return;
+  // カレンダーを付ける前のバックアップ（calendar がない）なら、今の予定を残す
+  const hasCal = !!(s.calendar && Array.isArray(s.calendar.events));
+  const nEv = state.calendar.events.length;
+  const msg = hasCal
+    ? `${when}に書き出されたバックアップ（仕訳${s.entries.length}件・予定${s.calendar.events.length}件）で、今のデータ（仕訳${state.entries.length}件・予定${nEv}件）を置き換えます。よろしいですか？`
+    : `${when}に書き出されたバックアップ（仕訳${s.entries.length}件）で、今の家計簿のデータ（仕訳${state.entries.length}件）を置き換えます。このバックアップには予定が含まれていないため、今の予定（${nEv}件）はそのまま残します。よろしいですか？`;
+  if (!confirm(msg)) return;
+  const keepCal = state.calendar;
   state = L.migrate(s);
+  if (!hasCal) state.calendar = keepCal;
+  C.ensureCalendar(state);
   await save();
   render();
   toast('バックアップから復元しました');
@@ -1288,9 +1328,9 @@ async function setPin(doneMsg = '番号を設定しました') {
 
 // 番号を忘れたとき：番号を通さずに開く方法を作らないため、データをすべて削除して解除する
 async function forgotPin() {
-  if (!confirm('番号を解除するには、この端末の家計簿のデータ（仕訳・科目・設定）をすべて削除します。バックアップのファイルがあれば、削除のあと設定画面の「ファイルから復元」で戻せます。削除しますか？')) return false;
+  if (!confirm('番号を解除するには、この端末の家計簿のデータ（仕訳・科目・設定・予定）をすべて削除します。バックアップのファイルがあれば、削除のあと設定画面の「ファイルから復元」で戻せます。削除しますか？')) return false;
   if (!confirm('本当に削除しますか？この操作は取り消せません。')) return false;
-  state = L.defaultState();
+  state = C.ensureCalendar(L.defaultState());
   ui.editingId = null;
   ui.draft = newDraft(ui.mode);
   ui.tab = 'settings';
@@ -1303,6 +1343,594 @@ async function forgotPin() {
   render();
   toast('データと番号を削除しました。バックアップがあれば「ファイルから復元」で戻せます');
   return true;
+}
+
+// ---------------------------------------------------------------- カレンダー
+const MONTH_LANES = 3; // 月表示のマスに出す段の数
+const catOf = (ev) => state.calendar.cats.find((c) => c.id === ev.cat) || state.calendar.cats.find((c) => c.id === C.UNCAT);
+const catColor = (cat) => `var(--${cat.color})`;
+const catInk = (cat) => (LIGHT_COLORS.includes(cat.color) || cat.color === 's-other' ? 'var(--s4-ink)' : '#fff');
+// 予定名。先頭の時間の部分を太字にする
+const titleHtml = (title) => {
+  const [t, rest] = C.splitTitle(title);
+  return (t ? `<b>${esc(t)}</b>` : '') + esc(rest);
+};
+const md = (d) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
+const dayKind = (d) => (C.holidayName(d) || C.weekday(d) === 0 ? 'sun' : C.weekday(d) === 6 ? 'sat' : '');
+
+// 予定ごとの、つながっている記録の金額（予定のid → { expense, income, n }）
+function eventSums() {
+  const m = new Map();
+  for (const e of state.entries) {
+    if (!e.eventId) continue;
+    const a = C.entryAmounts(e, state.accounts);
+    const x = m.get(e.eventId) || { expense: 0, income: 0, n: 0 };
+    m.set(e.eventId, { expense: x.expense + a.expense, income: x.income + a.income, n: x.n + 1 });
+  }
+  return m;
+}
+
+// 予定の1行（週表示・日の詳細・検索で使う）
+function eventRow(ev, sums, { back = '', withDate = false } = {}) {
+  const cat = catOf(ev);
+  const s = sums.get(ev.id);
+  const period = C.isMultiDay(ev) ? `${md(ev.date)}〜${md(ev.end)}` : '';
+  const when = withDate ? `${L.yearOf(ev.date)}年${dateLabel(ev.date)}` : '';
+  const sub = [when, cat.name, period, (ev.memo || '').split('\n')[0]].filter(Boolean).join('　');
+  const amt = s && (s.expense || s.income) ? `<span class="entry-amt ${s.expense ? '' : 'in'}">${s.expense ? '−' + yen(s.expense) : '+' + yen(s.income)}</span>` : '';
+  return `<li><button type="button" class="entry cev" data-act="cal-edit" data-id="${ev.id}" data-back="${back}">
+    <span class="cev-bar" style="background:${catColor(cat)}"></span>
+    <span class="entry-main"><span class="entry-title">${titleHtml(ev.title)}</span><span class="entry-sub">${esc(sub)}</span></span>${amt}</button></li>`;
+}
+
+function viewCalendar() {
+  return `<header class="top"><h1>カレンダー</h1><button type="button" class="link" data-act="cal-manage">種類・取り込み</button></header>
+    <div class="hsearch">
+      <input type="search" data-cal="q" value="${esc(ui.cal.q)}" placeholder="予定名・メモで検索" autocomplete="off" enterkeyhint="search" aria-label="予定を検索">
+    </div>
+    <div id="cal-body">${calBody()}</div>`;
+}
+
+function renderCalBody() {
+  const el = $('#cal-body');
+  if (el) {
+    el.innerHTML = calBody();
+    bindCalendar();
+  }
+}
+
+function calBody() {
+  const c = ui.cal;
+  if (c.q.trim()) {
+    const list = C.searchEvents(state.calendar, c.q);
+    const sums = eventSums();
+    return `<div class="hscope"><span class="hcount">${list.length}件（新しい順）</span><button type="button" class="link" data-act="cal-clear">検索をやめる</button></div>
+      <section class="card list">${list.length ? `<ul class="entries">${list.map((ev) => eventRow(ev, sums, { withDate: true })).join('')}</ul>` : '<p class="empty">見つかりませんでした</p>'}</section>`;
+  }
+  const month = c.view === 'month';
+  const label = month ? monthLabel(c.month) : weekLabel(c.week);
+  return `<div class="cal-bar">
+      <div class="seg seg-sm">
+        <button type="button" class="${month ? 'on' : ''}" data-act="cal-view" data-val="month">月</button>
+        <button type="button" class="${month ? '' : 'on'}" data-act="cal-view" data-val="week">週</button>
+      </div>
+      <button type="button" class="chip" data-act="cal-today">今日</button>
+    </div>
+    <div class="pnav">
+      <button type="button" class="icon-btn" data-act="cal-nav" data-val="-1" aria-label="前へ">‹</button>
+      <div class="pnav-label">${label}</div>
+      <button type="button" class="icon-btn" data-act="cal-nav" data-val="1" aria-label="次へ">›</button>
+    </div>
+    ${month ? monthGrid(c.month) : weekList(c.week)}`;
+}
+
+function weekLabel(ws) {
+  const we = C.addDays(ws, 6);
+  const m1 = Number(ws.slice(5, 7)), m2 = Number(we.slice(5, 7));
+  const y = L.yearOf(ws) !== L.yearOf(today()) ? `${L.yearOf(ws)}年` : '';
+  return `${y}${m1}月${Number(ws.slice(8))}日〜${m1 === m2 ? '' : m2 + '月'}${Number(we.slice(8))}日`;
+}
+
+// 月表示：6週分のマス。予定は種類の色の帯で、入りきらない分は「+2」のように数で出す
+function monthGrid(ym) {
+  const start = C.monthGridStart(ym);
+  const t = today();
+  let html = `<div class="mgrid" id="mgrid"><div class="mhead">${[...'日月火水木金土'].map((w, i) => `<span class="${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</span>`).join('')}</div>`;
+  for (let w = 0; w < 6; w++) {
+    const ws = C.addDays(start, 7 * w);
+    const items = C.layoutWeek(state.calendar, ws);
+    // その日に、段に入りきらない予定があるか
+    const more = Array.from({ length: 7 }, (_, c) => items.some((x) => x.lane >= MONTH_LANES && x.col <= c && c < x.col + x.span));
+    const shown = (x, c) => x.lane < MONTH_LANES - 1 || (x.lane === MONTH_LANES - 1 && !more[c]);
+    html += '<div class="mweek">';
+    for (let c = 0; c < 7; c++) {
+      const d = C.addDays(ws, c);
+      const hol = C.holidayName(d);
+      const cls = ['mday', L.monthOf(d) !== ym ? 'out' : '', d === t ? 'today' : '', dayKind(d)].filter(Boolean).join(' ');
+      html += `<button type="button" class="${cls}" style="grid-column:${c + 1}" data-act="cal-day" data-date="${d}" aria-label="${dateLabel(d)}${hol ? ' ' + hol : ''}"${hol ? ` title="${esc(hol)}"` : ''}><span class="mnum">${Number(d.slice(8))}</span></button>`;
+    }
+    for (const x of items) {
+      // 段に入る日だけを、続いた区間ごとの帯にする
+      let c = x.col;
+      while (c < x.col + x.span) {
+        if (!shown(x, c)) {
+          c++;
+          continue;
+        }
+        let e = c;
+        while (e + 1 < x.col + x.span && shown(x, e + 1)) e++;
+        const cat = catOf(x.ev);
+        const cont = c > x.col || x.ev.date < ws; // 前の日から続いている
+        html += `<span class="mbar${cont ? ' cont' : ''}" style="grid-column:${c + 1} / span ${e - c + 1};grid-row:${x.lane + 2};background:${catColor(cat)};color:${catInk(cat)}">${titleHtml(x.ev.title)}</span>`;
+        c = e + 1;
+      }
+    }
+    for (let c = 0; c < 7; c++) {
+      if (!more[c]) continue;
+      const n = items.filter((x) => x.col <= c && c < x.col + x.span && !shown(x, c)).length;
+      html += `<span class="mmore" style="grid-column:${c + 1};grid-row:${MONTH_LANES + 1}">+${n}</span>`;
+    }
+    html += '</div>';
+  }
+  return html + '</div><p class="hint cal-hint">左右にスワイプで月を移動。日付をタップすると、その日の予定と家計簿の記録が開きます。</p>';
+}
+
+// 週表示：7日分を縦に並べる
+function weekList(ws) {
+  const sums = eventSums();
+  const t = today();
+  let html = '<section class="card list wk">';
+  for (let i = 0; i < 7; i++) {
+    const d = C.addDays(ws, i);
+    const hol = C.holidayName(d);
+    const evs = C.eventsOn(state.calendar, d);
+    html += `<div class="wday${d === t ? ' today' : ''}">
+      <div class="wday-head">
+        <button type="button" class="wday-date ${dayKind(d)}" data-act="cal-day" data-date="${d}">${dateLabel(d)}${hol ? `<span class="hol">${esc(hol)}</span>` : ''}</button>
+        <button type="button" class="link" data-act="cal-add" data-date="${d}" aria-label="${dateLabel(d)}に予定を追加">＋</button>
+      </div>
+      ${evs.length ? `<ul class="entries">${evs.map((ev) => eventRow(ev, sums)).join('')}</ul>` : ''}
+    </div>`;
+  }
+  return html + '</section>';
+}
+
+// 月表示の左右のスワイプ
+function bindCalendar() {
+  const g = $('#mgrid');
+  if (!g) return;
+  let x0 = null, y0 = 0;
+  g.addEventListener('touchstart', (ev) => {
+    if (ev.touches.length !== 1) return (x0 = null);
+    x0 = ev.touches[0].clientX;
+    y0 = ev.touches[0].clientY;
+  }, { passive: true });
+  g.addEventListener('touchend', (ev) => {
+    if (x0 == null) return;
+    const dx = ev.changedTouches[0].clientX - x0;
+    const dy = ev.changedTouches[0].clientY - y0;
+    x0 = null;
+    if (Math.abs(dx) < 50 || Math.abs(dy) > Math.abs(dx) * 0.7) return;
+    ui.cal.month = L.addMonths(ui.cal.month, dx < 0 ? 1 : -1);
+    renderCalBody();
+  });
+}
+
+// 日の詳細：その日の予定と、家計簿の記録・支出の合計
+function daySheet(d) {
+  const hol = C.holidayName(d);
+  const sums = eventSums();
+  const evs = C.eventsOn(state.calendar, d);
+  const entries = state.entries.filter((e) => e.date === d).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  const total = C.sumAmounts(entries, state.accounts);
+  openSheet(`
+    <h2>${L.yearOf(d) !== L.yearOf(today()) ? L.yearOf(d) + '年' : ''}${dateLabel(d)}${hol ? `<span class="hol">${esc(hol)}</span>` : ''}</h2>
+    <h3 class="day">予定</h3>
+    ${evs.length ? `<ul class="entries">${evs.map((ev) => eventRow(ev, sums, { back: d })).join('')}</ul>` : '<p class="empty">予定はありません</p>'}
+    <button type="button" class="ghost" data-act="cal-add" data-date="${d}" data-back="${d}">＋ 予定を追加</button>
+    <h3 class="day day-sum"><span>家計簿</span>${total.expense ? `<span>支出 ${yen(total.expense)}</span>` : ''}</h3>
+    ${entries.length ? `<ul class="entries">${entries.map(entryRow).join('')}</ul>` : '<p class="empty">記録はありません</p>'}
+    <div class="sheet-actions"><button type="button" class="ghost" data-act="close-sheet">閉じる</button></div>`);
+  $('#sheet-body').scrollTop = 0;
+}
+
+// 予定の追加・編集。back：閉じたあとに戻る日の詳細の日付
+function eventForm(ev, { date = today(), back = '' } = {}) {
+  const isNew = !ev;
+  const cal = state.calendar;
+  const e = ev || { title: '', date, end: null, cat: C.UNCAT, memo: '' };
+  const cats = C.sortedCats(cal);
+  let linked = '';
+  if (!isNew) {
+    const list = C.linkedEntries(state, ev.id);
+    const sum = C.sumAmounts(list, state.accounts);
+    const parts = [sum.expense ? `支出 ${yen(sum.expense)}` : '', sum.income ? `収入 ${yen(sum.income)}` : ''].filter(Boolean).join('・');
+    linked = `<h3 class="day day-sum"><span>つながっている家計簿の記録</span>${parts ? `<span>${parts}</span>` : ''}</h3>
+      ${list.length ? `<ul class="entries">${list.map((x) => entryRow(x).replace('<span class="entry-sub">', `<span class="entry-sub">${md(x.date)}　`)).join('')}</ul>` : '<p class="hint">ありません。入力画面の「予定」でこの予定を選ぶと、ここに出ます。</p>'}`;
+  }
+  const src = ev?.src === 'timetree' ? '<p class="hint">TimeTreeから取り込んだ予定です。</p>' : '';
+  openSheet(`
+    <h2>${isNew ? '予定の追加' : '予定の編集'}</h2>
+    <form id="ev-form">
+      <label class="field"><span class="field-label">予定名</span><input name="title" value="${esc(e.title)}" autocomplete="off" placeholder="例：13-面接　1930-22 飲み会"></label>
+      <p class="hint">先頭に「13-」「1930-22」のように時間を書くと、太字で表示し、その日の予定の中で時刻の順に入ります。</p>
+      <input type="hidden" name="cat" value="${e.cat}">
+      <span class="field-label">種類</span>
+      <div class="chips" id="ev-cats">${cats.map((c) => `<button type="button" class="chip${c.id === e.cat ? ' on' : ''}" data-cat="${c.id}"><span class="sw" style="background:${catColor(c)}"></span>${esc(c.name)}</button>`).join('')}</div>
+      <div class="row2">
+        <label class="field"><span class="field-label">日付</span><input type="date" name="date" value="${e.date}" required></label>
+        <label class="field"><span class="field-label">終了日（任意）</span><input type="date" name="end" value="${e.end || ''}"></label>
+      </div>
+      <label class="field"><span class="field-label">メモ</span><textarea name="memo" rows="3" placeholder="任意">${esc(e.memo)}</textarea></label>
+      ${isNew ? `<div class="row2">
+        <label class="field"><span class="field-label">繰り返し</span><select name="rep"><option value="">しない</option><option value="weekly">毎週</option><option value="monthly">毎月</option></select></label>
+        <label class="field" id="ev-count" hidden><span class="field-label">回数（この日を含む）</span><input name="count" type="number" inputmode="numeric" min="2" max="${C.MAX_REPEAT}" value="4"></label>
+      </div><p class="hint" id="ev-rep-note" hidden>作ったあとは、1件ずつの予定になります。</p>` : ''}
+      ${src}${linked}
+      <div class="sheet-actions">
+        ${isNew ? '' : `<button type="button" class="danger" data-act="cal-delete" data-id="${ev.id}" data-back="${back}">削除</button>`}
+        <button type="button" class="ghost" data-act="cal-back" data-back="${back}">閉じる</button>
+        <button type="submit" class="primary">保存</button>
+      </div>
+    </form>`);
+  $('#sheet-body').scrollTop = 0;
+  const form = $('#ev-form');
+  const f = form.elements;
+  $('#ev-cats').addEventListener('click', (x) => {
+    const b = x.target.closest('[data-cat]');
+    if (!b) return;
+    f.cat.value = b.dataset.cat;
+    form.querySelectorAll('#ev-cats .chip').forEach((c) => c.classList.toggle('on', c === b));
+  });
+  f.rep?.addEventListener('change', () => {
+    $('#ev-count').hidden = !f.rep.value;
+    $('#ev-rep-note').hidden = !f.rep.value;
+  });
+  form.addEventListener('submit', async (x) => {
+    x.preventDefault();
+    const title = f.title.value.trim();
+    const d = f.date.value;
+    const end = f.end.value || null;
+    if (!title) return toast('予定名を入力してください');
+    if (!C.isDate(d)) return toast('日付を入力してください');
+    if (end && end < d) return toast('終了日が日付より前になっています');
+    const data = { title, cat: f.cat.value, memo: f.memo.value.trim() };
+    let msg = '保存しました';
+    await commit((s) => {
+      const c = s.calendar;
+      if (isNew) {
+        const span = end ? C.diffDays(d, end) : 0;
+        const dates = f.rep.value ? C.repeatDates(d, f.rep.value, Number(f.count.value) || 1) : [d];
+        for (const day of dates) C.addEvent(c, C.newEvent({ ...data, date: day, end: span ? C.addDays(day, span) : null }));
+        if (dates.length > 1) msg = `予定を${dates.length}件作りました`;
+      } else {
+        const moved = ev.date !== d || C.lastDay(ev) !== (end && end > d ? end : d);
+        Object.assign(ev, data, { date: d, end: end && end > d ? end : null });
+        if (moved) C.placeEvent(c, ev); // 日付を変えたら、新しい日の並び順に入れる
+      }
+    });
+    calBack(back);
+    toast(msg);
+  });
+  if (isNew) f.title.focus();
+}
+
+function calBack(back) {
+  if (back) daySheet(back);
+  else closeSheet();
+}
+
+// 種類の管理・科目との対応・TimeTreeの取り込み
+function calManageSheet() {
+  const cal = state.calendar;
+  const cats = C.sortedCats(cal);
+  const opts = (sel) => `<option value="">（なし）</option>` + cats.map((c) => `<option value="${c.id}"${c.id === sel ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
+  const exps = state.accounts.filter((a) => a.type === 'expense' && (!a.archived || cal.accCat[a.id]));
+  const imports = [...cal.imports].sort((a, b) => b.at - a.at);
+  openSheet(`
+    <h2>予定の種類</h2>
+    <ul class="accs">${cats
+      .map(
+        (c, i) => `<li><span><span class="sw" style="background:${catColor(c)}"></span>${esc(c.name)}</span>
+        <span class="acc-btns">
+          <button type="button" class="link" data-act="cat-move" data-id="${c.id}" data-val="-1" aria-label="上へ"${i === 0 ? ' disabled' : ''}>↑</button>
+          <button type="button" class="link" data-act="cat-move" data-id="${c.id}" data-val="1" aria-label="下へ"${i === cats.length - 1 ? ' disabled' : ''}>↓</button>
+          <button type="button" class="link" data-act="cat-color" data-id="${c.id}">色</button>
+          <button type="button" class="link" data-act="cat-rename" data-id="${c.id}">名前</button>
+          ${c.id === C.UNCAT ? '' : `<button type="button" class="link danger-text" data-act="cat-delete" data-id="${c.id}">削除</button>`}
+        </span></li>`,
+      )
+      .join('')}</ul>
+    <div class="row2 add-cat"><input id="new-cat-name" placeholder="新しい種類の名前" autocomplete="off"><button type="button" class="ghost" data-act="cat-add">追加</button></div>
+    <p class="hint">削除した種類の予定は「未分類」になります。</p>
+
+    <h2 class="sheet-h2">費用の科目と種類</h2>
+    <p class="hint">入力画面の「＋ 新しい予定」で作った予定の種類を、支出の科目で決めます。収入・振替のときや、対応がないときは「未分類」。</p>
+    <table class="cat"><tbody>${exps
+      .map((a) => `<tr><td><span class="sw" style="background:${expenseColor(a.id)}"></span>${esc(a.name)}</td><td><select class="acccat" data-acccat="${a.id}" aria-label="${esc(a.name)}の予定の種類">${opts(cal.accCat[a.id])}</select></td></tr>`)
+      .join('')}</tbody></table>
+
+    <h2 class="sheet-h2">TimeTreeから取り込む</h2>
+    <p class="hint">timetree-exporter で書き出した .ics ファイルを選びます。同じファイルを2回読んでも、同じ予定は重複しません。</p>
+    <button type="button" class="ghost" data-act="ics-pick">.ics ファイルを選ぶ</button>
+    <input type="file" id="ics-file" accept=".ics,text/calendar" hidden>
+    ${imports.length ? `<h3 class="day">取り込んだファイル</h3><ul class="accs">${imports
+      .map((x) => `<li><span>${esc(x.name)}　<span class="muted">${new Date(x.at).toLocaleDateString('ja-JP')}・${x.count}件</span></span>
+        <span class="acc-btns"><button type="button" class="link danger-text" data-act="ics-undo" data-id="${x.id}">まとめて削除</button></span></li>`)
+      .join('')}</ul>` : ''}
+    <div class="sheet-actions"><button type="button" class="ghost" data-act="close-sheet">閉じる</button></div>`);
+}
+
+async function readIcsFile(file) {
+  let text;
+  try {
+    text = await file.text();
+  } catch (e) {
+    return toast('ファイルを読み込めませんでした：' + e.message);
+  }
+  if (!/BEGIN:VEVENT/.test(text)) return toast('予定が見つかりませんでした（.ics のファイルを選んでください）');
+  const items = C.parseICS(text, { until: C.addDays(today(), 365) }); // 繰り返しは取り込む日の1年後まで
+  importSheet(file.name, items);
+}
+
+// 取り込みの確認：件数と期間、ラベル→種類、名前で決める決まり
+function importSheet(name, items) {
+  const cal = state.calendar;
+  const plan = C.planImport(cal, items);
+  const labelMap = C.defaultLabelMap(cal, plan.fresh);
+  const keys = Object.keys(labelMap);
+  const cats = C.sortedCats(cal);
+  const catOpts = (sel, none) => (none ? `<option value="">${none}</option>` : '') + cats.map((c) => `<option value="${c.id}"${c.id === sel ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
+  const fmt = (d) => `${L.yearOf(d)}年${md(d)}`;
+  const draw = () => {
+    const counts = new Map();
+    for (const it of plan.fresh) {
+      const c = C.catForImport(cal, it, labelMap);
+      counts.set(c, (counts.get(c) || 0) + 1);
+    }
+    $('#imp-preview').textContent = plan.fresh.length
+      ? '種類ごとの件数：' + cats.filter((c) => counts.get(c.id)).map((c) => `${c.name} ${counts.get(c.id)}`).join('・')
+      : '';
+    $('#imp-rules').innerHTML = cal.rules.length
+      ? cal.rules.map((r, i) => `<li><span>名前に「${esc(r.text)}」→ ${esc(cal.cats.find((c) => c.id === r.cat)?.name || '')}</span><span class="acc-btns"><button type="button" class="link danger-text" data-rule-del="${i}">削除</button></span></li>`).join('')
+      : '<li><span class="muted">決まりはありません</span></li>';
+  };
+  openSheet(`
+    <h2>TimeTreeから取り込む</h2>
+    <p>${esc(name)}</p>
+    <p>${plan.fresh.length ? `予定 <b>${plan.fresh.length}件</b>（${fmt(plan.from)}〜${fmt(plan.to)}）を取り込みます。` : '新しく取り込む予定はありません。'}${plan.dup ? `すでに取り込んだ${plan.dup}件は除きます。` : ''}</p>
+    <p class="hint">繰り返しの予定は、今日から1年後までを1件ずつの予定にします。時刻は予定名に付けず、その日の中の並び順にだけ使います。</p>
+    ${keys.length ? `<h3 class="day">ラベル → 種類</h3><table class="cat"><tbody>${keys
+      .map((k) => `<tr><td>${/^#[0-9a-f]{6}/i.test(k) ? `<span class="sw" style="background:${esc(k.slice(0, 7))}"></span>色 ${esc(k)}` : esc(k)}</td><td><select class="acccat" data-label="${esc(k)}">${catOpts(labelMap[k], '名前で決める')}</select></td></tr>`)
+      .join('')}</tbody></table>` : ''}
+    <h3 class="day">名前で決める（ラベルで決まらない予定）</h3>
+    <ul class="accs" id="imp-rules"></ul>
+    <div class="row2 add-rule"><input id="rule-text" placeholder="名前に含む文字（例：バイト）" autocomplete="off"><select id="rule-cat">${catOpts(cats[0]?.id)}</select></div>
+    <button type="button" class="ghost" id="rule-add">決まりを追加</button>
+    <p class="hint">どれにも当たらない予定は「未分類」になります。</p>
+    <p class="preview" id="imp-preview"></p>
+    <div class="sheet-actions">
+      <button type="button" class="ghost" data-act="cal-manage">戻る</button>
+      <button type="button" class="primary" id="imp-go"${plan.fresh.length ? '' : ' disabled'}>取り込む</button>
+    </div>`);
+  const body = $('#sheet-body');
+  body.scrollTop = 0;
+  body.querySelectorAll('[data-label]').forEach((s) => s.addEventListener('change', () => {
+    labelMap[s.dataset.label] = s.value;
+    draw();
+  }));
+  $('#imp-rules').addEventListener('click', async (x) => {
+    const b = x.target.closest('[data-rule-del]');
+    if (!b) return;
+    await commit((s) => s.calendar.rules.splice(Number(b.dataset.ruleDel), 1));
+    draw();
+  });
+  $('#rule-add').addEventListener('click', async () => {
+    const text = $('#rule-text').value.trim();
+    if (!text) return toast('名前に含む文字を入力してください');
+    await commit((s) => s.calendar.rules.push({ text, cat: $('#rule-cat').value }));
+    $('#rule-text').value = '';
+    draw();
+  });
+  $('#imp-go').addEventListener('click', async () => {
+    let rec;
+    await commit((s) => (rec = C.applyImport(s.calendar, plan.fresh, { name, labelMap })));
+    calManageSheet();
+    toast(`${rec.count}件の予定を取り込みました`);
+  });
+  draw();
+}
+
+// ---- 入力画面の「予定」の1行
+// 自動入力（固定費）・開始残高・評価額の仕訳は予定につながない
+function eventPickAllowed() {
+  if (!ui.editingId) return true;
+  const e = state.entries.find((x) => x.id === ui.editingId);
+  return !(e && ['recurring', 'opening', 'valuation'].includes(e.kind));
+}
+
+function eventPicker() {
+  const d = ui.draft;
+  const evs = C.isDate(d.date) ? C.eventsOn(state.calendar, d.date) : [];
+  if (d.eventId && !evs.some((e) => e.id === d.eventId)) d.eventId = null; // 日付を変えて、その日の予定でなくなった
+  return `<div class="field-label">予定</div><div class="chips">${evs
+    .map((ev) => `<button type="button" class="chip ev-chip${ev.id === d.eventId ? ' on' : ''}" data-act="ev-pick" data-id="${ev.id}"><span class="sw" style="background:${catColor(catOf(ev))}"></span><span class="ev-chip-t">${titleHtml(ev.title)}</span></button>`)
+    .join('')}<button type="button" class="chip chip-add${d.newEventOpen ? ' on-add' : ''}" data-act="ev-new">＋ 新しい予定</button></div>
+    ${d.newEventOpen ? `<label class="field ev-new"><input type="text" data-field="newEvent" value="${esc(d.newEvent)}" placeholder="予定名（例：13-面接）" autocomplete="off" aria-label="新しい予定の名前"></label>
+      <p class="hint">保存すると、この日の予定としてカレンダーに作り、この記録とつなぎます。同じ日に同じ名前の予定があれば、それにつなぎます。</p>` : ''}`;
+}
+
+function renderEventPicker() {
+  const el = $('#ev-pick');
+  if (el) el.innerHTML = eventPicker();
+}
+
+// 仕訳の詳細に出す、つながっている予定の1行
+function linkedEventLine(e) {
+  const ev = e.eventId && state.calendar.events.find((x) => x.id === e.eventId);
+  if (!ev) return '';
+  const d = C.occursOn(ev, e.date) ? e.date : ev.date;
+  return `<button type="button" class="ev-link" data-act="cal-goto" data-date="${d}"><span class="sw" style="background:${catColor(catOf(ev))}"></span>予定：${titleHtml(ev.title)}<span class="ev-link-go">›</span></button>`;
+}
+
+const CAL_ACTIONS = {
+  'cal-view': (el) => {
+    ui.cal.view = el.dataset.val;
+    // 月と週を切り替えたら、見ていた期間に合わせる
+    if (ui.cal.view === 'week') {
+      const t = today();
+      ui.cal.week = C.startOfWeek(L.monthOf(t) === ui.cal.month ? t : `${ui.cal.month}-01`);
+    } else ui.cal.month = L.monthOf(C.addDays(ui.cal.week, 3));
+    renderCalBody();
+  },
+  'cal-nav': (el) => {
+    const n = Number(el.dataset.val);
+    if (ui.cal.view === 'month') ui.cal.month = L.addMonths(ui.cal.month, n);
+    else ui.cal.week = C.addDays(ui.cal.week, 7 * n);
+    renderCalBody();
+  },
+  'cal-today': () => {
+    ui.cal.month = L.monthOf(today());
+    ui.cal.week = C.startOfWeek(today());
+    renderCalBody();
+  },
+  'cal-clear': () => {
+    ui.cal.q = '';
+    render();
+  },
+  'cal-day': (el) => daySheet(el.dataset.date),
+  'cal-add': (el) => eventForm(null, { date: el.dataset.date, back: el.dataset.back || '' }),
+  'cal-edit': (el) => {
+    const ev = state.calendar.events.find((x) => x.id === el.dataset.id);
+    if (ev) eventForm(ev, { back: el.dataset.back || '' });
+  },
+  'cal-back': (el) => calBack(el.dataset.back),
+  'cal-delete': async (el) => {
+    const ev = state.calendar.events.find((x) => x.id === el.dataset.id);
+    if (!ev) return;
+    const n = C.linkedEntries(state, ev.id).length;
+    if (!confirm(`予定「${ev.title}」を削除しますか？${n ? `つながっている家計簿の記録（${n}件）は消えず、つながりだけ外れます。` : ''}`)) return;
+    await commit((s) => C.removeEvents(s, [ev.id]));
+    calBack(el.dataset.back);
+    toast('予定を削除しました');
+  },
+  'cal-goto': (el) => {
+    const d = el.dataset.date;
+    ui.tab = 'calendar';
+    Object.assign(ui.cal, { q: '', month: L.monthOf(d), week: C.startOfWeek(d) });
+    window.scrollTo(0, 0);
+    render();
+    daySheet(d);
+  },
+  'cal-manage': () => calManageSheet(),
+  'cat-add': async () => {
+    const name = $('#new-cat-name').value.trim();
+    if (!name) return toast('種類の名前を入力してください');
+    if (state.calendar.cats.some((c) => c.name === name)) return toast('同じ名前の種類があります');
+    const used = new Set(state.calendar.cats.map((c) => c.color));
+    const color = PALETTE.find((k) => k !== 's-other' && !used.has(k)) || 's9';
+    await commit((s) => {
+      const c = s.calendar;
+      const order = Math.max(-1, ...c.cats.filter((x) => x.id !== C.UNCAT).map((x) => x.order));
+      // 「未分類」はいちばん下のままにする
+      for (const x of c.cats) if (x.order > order) x.order++;
+      c.cats.push({ id: L.uid(), name, color, order: order + 1 });
+    });
+    calManageSheet();
+  },
+  'cat-rename': async (el) => {
+    const c = state.calendar.cats.find((x) => x.id === el.dataset.id);
+    const name = prompt('新しい名前', c.name);
+    if (!name || !name.trim()) return;
+    await commit(() => (c.name = name.trim()));
+    calManageSheet();
+  },
+  'cat-move': async (el) => {
+    const list = C.sortedCats(state.calendar);
+    const i = list.findIndex((x) => x.id === el.dataset.id);
+    const j = i + Number(el.dataset.val);
+    if (j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    await commit(() => list.forEach((x, k) => (x.order = k)));
+    calManageSheet();
+  },
+  'cat-delete': async (el) => {
+    const c = state.calendar.cats.find((x) => x.id === el.dataset.id);
+    const n = state.calendar.events.filter((e) => e.cat === c.id).length;
+    if (!confirm(`種類「${c.name}」を削除しますか？${n ? `この種類の予定（${n}件）は「未分類」になります。` : ''}`)) return;
+    await commit((s) => C.removeCat(s.calendar, c.id));
+    calManageSheet();
+  },
+  'cat-color': (el) => {
+    const c = state.calendar.cats.find((x) => x.id === el.dataset.id);
+    openSheet(`
+      <h2>色の変更</h2>
+      <form id="color-form">
+        <p class="color-preview"><span class="sw" id="color-sw" style="background:${catColor(c)}"></span>${esc(c.name)}</p>
+        ${swatchPicker(c.color)}
+        <div class="sheet-actions">
+          <button type="button" class="ghost" data-act="cal-manage">戻る</button>
+          <button type="submit" class="primary">保存</button>
+        </div>
+      </form>`);
+    const form = $('#color-form');
+    bindSwatches(form, (k) => ($('#color-sw').style.background = `var(--${k})`));
+    form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const k = form.elements.acccolor.value;
+      await commit(() => (c.color = k));
+      calManageSheet();
+    });
+  },
+  'ics-pick': () => $('#ics-file').click(),
+  'ics-undo': async (el) => {
+    const rec = state.calendar.imports.find((x) => x.id === el.dataset.id);
+    const n = state.calendar.events.filter((e) => e.importId === rec.id).length;
+    if (!confirm(`「${rec.name}」から取り込んだ予定（${n}件）をまとめて削除しますか？つながっている家計簿の記録は消えず、つながりだけ外れます。`)) return;
+    await commit((s) => C.removeImport(s, rec.id));
+    calManageSheet();
+    toast(`${n}件の予定を削除しました`);
+  },
+  'ev-pick': (el) => {
+    const d = ui.draft;
+    d.eventId = d.eventId === el.dataset.id ? null : el.dataset.id; // もう一度タップすると外れる
+    Object.assign(d, { newEventOpen: false, newEvent: '' });
+    renderEventPicker();
+  },
+  'ev-new': () => {
+    const d = ui.draft;
+    d.newEventOpen = !d.newEventOpen;
+    if (d.newEventOpen) d.eventId = null;
+    else d.newEvent = '';
+    renderEventPicker();
+    if (d.newEventOpen) $('#ev-pick input')?.focus();
+  },
+};
+
+// デモ用の予定（?demo のときだけ）
+function demoEvents(s, rnd) {
+  const cal = s.calendar;
+  const add = (title, date, cat, extra = {}) => C.addEvent(cal, C.newEvent({ title, date, cat, ...extra }));
+  const end = C.addDays(today(), 30);
+  for (let d = C.startOfWeek(`${L.addMonths(L.monthOf(today()), -2)}-01`); d <= end; d = C.addDays(d, 1)) {
+    const w = C.weekday(d);
+    if (w === 1 || w === 4) add('17-22 バイト', d, 'c_job');
+    if (w === 2) add('1-2限 統計', d, 'c_univ');
+    if (w === 3) add('1030-12 ゼミ', d, 'c_univ');
+  }
+  // 山と遊びの支出に、予定をつないでおく
+  const titles = { mountain: ['山（丹沢）', '高尾山', '山（奥多摩）'], play: ['8-映画', '1930- 飲み会', 'カラオケ'] };
+  for (const e of s.entries) {
+    const l = e.lines.find((x) => titles[x.acc] && x.side === 'dr');
+    if (!l || rnd() < 0.3) continue;
+    const t = titles[l.acc][Math.floor(rnd() * 3)];
+    const ev = C.findSameEvent(cal, e.date, t) || add(t, e.date, cal.accCat[l.acc], { src: 'ledger' });
+    e.eventId = ev.id;
+  }
+  const trip = C.addDays(today(), -12);
+  add('旅行（京都）', trip, 'c_play', { end: C.addDays(trip, 2), memo: '新幹線\n宿：駅の近く' });
+  add('13-面接', C.addDays(today(), 2), C.UNCAT);
+  add('合宿', C.addDays(today(), 9), 'c_mount', { end: C.addDays(today(), 11) });
 }
 
 // ---------------------------------------------------------------- シートと上部の表示
@@ -1332,7 +1960,7 @@ function renderBanner() {
 }
 
 // ---------------------------------------------------------------- 描画とイベント
-const VIEWS = { input: viewInput, history: viewHistory, charts: viewCharts, settings: viewSettings };
+const VIEWS = { input: viewInput, history: viewHistory, calendar: viewCalendar, charts: viewCharts, settings: viewSettings };
 
 function render() {
   $('#view').innerHTML = VIEWS[ui.tab]();
@@ -1340,6 +1968,7 @@ function render() {
   renderBanner();
   if (ui.tab === 'input') updatePreview();
   if (ui.tab === 'charts') drawCharts();
+  if (ui.tab === 'calendar') bindCalendar();
   if (ui.tab === 'settings' && navigator.storage && navigator.storage.persisted) {
     navigator.storage.persisted().then((p) => {
       const el = $('#persist-status');
@@ -1375,6 +2004,7 @@ async function showOfflineStatus() {
 }
 
 const ACTIONS = {
+  ...CAL_ACTIONS,
   tab: (el) => {
     ui.tab = el.dataset.tab;
     window.scrollTo(0, 0);
@@ -1543,9 +2173,9 @@ const ACTIONS = {
     toast('ロックをやめました');
   },
   wipe: async () => {
-    if (!confirm('すべての仕訳・科目・設定を削除して、最初の状態に戻します。先にバックアップを書き出しましたか？')) return;
+    if (!confirm('すべての仕訳・科目・設定・予定を削除して、最初の状態に戻します。先にバックアップを書き出しましたか？')) return;
     if (!confirm('本当に削除しますか？この操作は取り消せません。')) return;
-    state = L.defaultState();
+    state = C.ensureCalendar(L.defaultState());
     ui.draft = newDraft(ui.mode);
     await save();
     render();
@@ -1565,8 +2195,12 @@ document.addEventListener('input', (ev) => {
   if (t.dataset.hist === 'q') {
     ui.hist.q = t.value;
     renderHistBody();
+  } else if (t.dataset.cal === 'q') {
+    ui.cal.q = t.value;
+    renderCalBody();
   } else if (t.dataset.field && ui.tab === 'input') {
     ui.draft[t.dataset.field] = t.value;
+    if (t.dataset.field === 'date') renderEventPicker(); // 日付を変えたら、並ぶ予定もその日のものにする
     updatePreview();
   } else if (t.dataset.jfield) {
     const i = Number(t.closest('.jrow').dataset.i);
@@ -1594,6 +2228,14 @@ document.addEventListener('change', async (ev) => {
     }
   } else if (t.id === 'import-file' && t.files[0]) {
     await importBackup(t.files[0]);
+    t.value = '';
+  } else if (t.dataset.acccat) {
+    await commit((s) => {
+      if (t.value) s.calendar.accCat[t.dataset.acccat] = t.value;
+      else delete s.calendar.accCat[t.dataset.acccat];
+    });
+  } else if (t.id === 'ics-file' && t.files[0]) {
+    await readIcsFile(t.files[0]);
     t.value = '';
   }
 });
@@ -1680,13 +2322,13 @@ function demoState() {
   Object.assign(s.recurring[2], { amount: 5900, freq: 'yearly', month: 4, day: 1, startMonth: start, active: true });
   L.generateRecurring(s, today());
   s.settings.lastBackupAt = new Date(Date.now() - 3 * 86400000).toISOString();
+  demoEvents(C.ensureCalendar(s), rnd);
   return s;
 }
 
 // ---------------------------------------------------------------- 起動
 async function init() {
   if (DEMO) {
-    state = L.defaultState();
     state = demoState();
   } else {
     let stored = null;
@@ -1698,7 +2340,7 @@ async function init() {
       storageOk = false;
       toast('データの保存場所を開けませんでした。この状態では入力が保存されません：' + (e && e.message));
     }
-    state = stored ? L.migrate(stored) : L.defaultState();
+    state = C.ensureCalendar(stored ? L.migrate(stored) : L.defaultState());
     const created = L.generateRecurring(state, today());
     if (!stored || created.length) await save();
     if (created.length) setTimeout(() => toast(`固定費の仕訳を${created.length}件作りました`), 300);
