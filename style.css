@@ -353,3 +353,72 @@ body.locked { overflow: hidden; }
   .tabbar { justify-content: center; }
   .tabbar button { flex: 0 0 120px; }
 }
+
+/* カレンダー */
+.cal-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.cal-bar .seg { flex: 1; margin: 0; }
+.cal-bar .chip { flex: none; padding: 5px 14px; }
+.sun { color: var(--bad-text); }
+.sat { color: var(--accent); }
+.hol { font-size: 12px; font-weight: 400; color: var(--bad-text); margin-left: 8px; }
+.mgrid { background: var(--card); border-radius: 14px; box-shadow: 0 0 0 1px var(--ring); overflow: hidden; touch-action: pan-y; }
+.mhead { display: grid; grid-template-columns: repeat(7, 1fr); font-size: 11px; text-align: center; color: var(--text-2); padding: 4px 0; border-bottom: 1px solid var(--line); }
+.mweek {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-template-rows: 22px repeat(3, 16px) 4px;
+  row-gap: 2px; border-bottom: 1px solid var(--line);
+}
+.mweek:last-child { border-bottom: 0; }
+.mday {
+  grid-row: 1 / -1; border: 0; border-left: 1px solid var(--line); background: none; padding: 2px 0 0; display: flex;
+  justify-content: center; align-items: flex-start; cursor: pointer; touch-action: manipulation; color: var(--text);
+}
+.mday:first-child { border-left: 0; }
+.mday:active { background: var(--sel); }
+.mday.out .mnum { opacity: 0.4; }
+.mday.sun { color: var(--bad-text); }
+.mday.sat { color: var(--accent); }
+.mnum { font-size: 12px; font-variant-numeric: tabular-nums; width: 20px; height: 20px; line-height: 20px; border-radius: 50%; text-align: center; }
+.mday.today .mnum { background: var(--accent); color: var(--accent-text); font-weight: 700; opacity: 1; }
+.mbar, .mmore { pointer-events: none; font-size: 10.5px; line-height: 16px; height: 16px; white-space: nowrap; overflow: hidden; }
+.mbar { margin: 0 2px; padding: 0 3px; border-radius: 4px; text-overflow: clip; z-index: 1; }
+.mbar b { font-weight: 700; }
+.mbar.cont { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: 0; }
+.mmore { text-align: center; color: var(--text-2); font-weight: 600; z-index: 1; }
+.cal-hint { margin: 8px 2px 0; }
+.wk { padding-top: 6px; padding-bottom: 6px; }
+.wday { border-bottom: 1px solid var(--line); padding: 4px 0; }
+.wday:last-child { border-bottom: 0; }
+.wday-head { display: flex; align-items: center; justify-content: space-between; }
+.wday-date { border: 0; background: none; padding: 6px 0; font-size: 14px; font-weight: 600; text-align: left; color: var(--text-2); }
+.wday-date.sun { color: var(--bad-text); }
+.wday-date.sat { color: var(--accent); }
+.wday.today .wday-date::after { content: "今日"; margin-left: 8px; font-size: 11px; background: var(--accent); color: var(--accent-text); border-radius: 6px; padding: 1px 6px; vertical-align: 1px; }
+.wday-head .link { font-size: 22px; line-height: 1; padding: 2px 8px; }
+.wday .entries { margin-bottom: 4px; }
+.cev { padding: 8px 0; }
+.cev-bar { width: 4px; align-self: stretch; border-radius: 2px; flex: none; }
+.entry-title b, .ev-chip-t b, .ev-link b { font-weight: 700; }
+.day-sum { display: flex; justify-content: space-between; margin-top: 18px; }
+.sheet .day:first-of-type { margin-top: 10px; }
+.sheet-h2 { margin-top: 22px; }
+.sheet textarea {
+  width: 100%; border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 9px 10px; font: inherit; font-size: 16px; color: var(--text); resize: vertical;
+}
+.acccat { border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 6px 8px; font-size: 15px; width: 100%; }
+.add-cat, .add-rule { margin-top: 10px; grid-template-columns: 1fr auto; align-items: center; }
+.add-rule { grid-template-columns: 1fr 1fr; }
+.add-cat input, .add-rule input, .add-rule select {
+  width: 100%; border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 9px 10px; font-size: 16px; min-height: 42px;
+}
+.add-cat button.ghost { margin: 0; padding: 10px 16px; }
+.acc-btns .link:disabled { opacity: 0.3; }
+.ev-chip { max-width: 100%; }
+.ev-chip-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-add.on-add { border-color: var(--accent); color: var(--accent); }
+.ev-new { margin-top: 8px; }
+.ev-link {
+  display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: var(--card-2); border-radius: 10px;
+  padding: 9px 12px; margin: 8px 0; font-size: 15px; text-align: left; color: var(--text);
+}
+.ev-link-go { margin-left: auto; color: var(--muted); font-size: 18px; }
+@media (max-width: 360px) { .tabbar button { font-size: 10px; } }
