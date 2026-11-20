@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.17.0';
+const APP_VERSION = '1.18.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -1362,7 +1362,7 @@ async function forgotPin() {
 }
 
 // ---------------------------------------------------------------- カレンダー
-const MONTH_LANES = 3; // 月表示のマスに出す段の数
+const MONTH_LANES = 4; // 月表示のマスに出す段の数（style.css の .mweek の grid-template-rows と合わせる）
 const catOf = (ev) => state.calendar.cats.find((c) => c.id === ev.cat) || state.calendar.cats.find((c) => c.id === C.UNCAT);
 const catColor = (cat) => `var(--${cat.color})`;
 const catInk = (cat) => (LIGHT_COLORS.includes(cat.color) || cat.color === 's-other' ? 'var(--s4-ink)' : '#fff');

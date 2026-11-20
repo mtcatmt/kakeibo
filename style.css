@@ -383,7 +383,7 @@ body.cal-fixed { overscroll-behavior-y: none; }
   background: var(--card); border-radius: 14px 14px 0 0; box-shadow: 0 0 0 1px var(--ring);
 }
 .mweek {
-  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-template-rows: 22px repeat(3, 16px) 4px;
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-template-rows: 22px repeat(4, 16px) 4px; /* 日付と、予定の4段（app.js の MONTH_LANES と合わせる） */
   row-gap: 2px; border-bottom: 1px solid var(--line);
 }
 .mday {
