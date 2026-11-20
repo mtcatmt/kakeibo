@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.10.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -968,6 +968,22 @@ function viewSettings() {
       <p class="hint">仕訳で使っている科目は削除できません。使わなくなった科目は「非表示」にすると、入力画面に出なくなります。</p>
     </section>
 
+    <section class="card">
+      <h2>予定の種類</h2>
+      <ul class="accs">${C.sortedCats(state.calendar)
+        .map(
+          (c) => `<li><span><span class="sw" style="background:${catColor(c)}"></span>${esc(c.name)}</span>
+          <span class="acc-btns">
+            <button type="button" class="link" data-act="cat-color" data-id="${c.id}" data-from="settings">色</button>
+            <button type="button" class="link" data-act="cat-rename" data-id="${c.id}" data-from="settings">名前</button>
+            ${c.id === C.UNCAT ? '' : `<button type="button" class="link danger-text" data-act="cat-delete" data-id="${c.id}" data-from="settings">削除</button>`}
+          </span></li>`,
+        )
+        .join('')}</ul>
+      <button type="button" class="ghost" data-act="cat-add" data-from="settings">種類を追加</button>
+      <p class="hint">カレンダーの予定の色に使います。削除した種類の予定は「未分類」になります。並べ替えと、費用の科目との対応は、カレンダーの「種類・取り込み」からできます。</p>
+    </section>
+
     ${DEMO ? '' : `<section class="card">
       <h2>ロック（4桁の番号）</h2>
       ${lock
@@ -1605,10 +1621,11 @@ function daySheet(d) {
 }
 
 // 予定の追加・編集。back：閉じたあとに戻る日の詳細の日付
-function eventForm(ev, { date = today(), back = '' } = {}) {
+// draft：種類を追加して戻ってきたときの、入力途中の値
+function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
   const isNew = !ev;
   const cal = state.calendar;
-  const e = ev || { title: '', date, end: null, cat: C.UNCAT, memo: '' };
+  const e = { ...(ev || { title: '', date, end: null, cat: C.UNCAT, memo: '' }), ...(draft || {}) };
   const cats = C.sortedCats(cal);
   let linked = '';
   if (!isNew) {
@@ -1626,16 +1643,16 @@ function eventForm(ev, { date = today(), back = '' } = {}) {
       <p class="hint">先頭に「13-」「1930-22」のように時間を書くと、太字で表示し、その日の予定の中で時刻の順に入ります。</p>
       <input type="hidden" name="cat" value="${e.cat}">
       <span class="field-label">種類</span>
-      <div class="chips" id="ev-cats">${cats.map((c) => `<button type="button" class="chip${c.id === e.cat ? ' on' : ''}" data-cat="${c.id}"><span class="sw" style="background:${catColor(c)}"></span>${esc(c.name)}</button>`).join('')}</div>
+      <div class="chips" id="ev-cats">${cats.map((c) => `<button type="button" class="chip${c.id === e.cat ? ' on' : ''}" data-cat="${c.id}"><span class="sw" style="background:${catColor(c)}"></span>${esc(c.name)}</button>`).join('')}<button type="button" class="chip chip-add" id="ev-cat-add">＋ 追加</button></div>
       <div class="row2">
         <label class="field"><span class="field-label">日付</span><input type="date" name="date" value="${e.date}" required></label>
         <label class="field"><span class="field-label">終了日（任意）</span><input type="date" name="end" value="${e.end || ''}"></label>
       </div>
       <label class="field"><span class="field-label">メモ</span><textarea name="memo" rows="3" placeholder="任意">${esc(e.memo)}</textarea></label>
       ${isNew ? `<div class="row2">
-        <label class="field"><span class="field-label">繰り返し</span><select name="rep"><option value="">しない</option><option value="weekly">毎週</option><option value="monthly">毎月</option></select></label>
-        <label class="field" id="ev-count" hidden><span class="field-label">回数（この日を含む）</span><input name="count" type="number" inputmode="numeric" min="2" max="${C.MAX_REPEAT}" value="4"></label>
-      </div><p class="hint" id="ev-rep-note" hidden>作ったあとは、1件ずつの予定になります。</p>` : ''}
+        <label class="field"><span class="field-label">繰り返し</span><select name="rep">${[['', 'しない'], ['weekly', '毎週'], ['monthly', '毎月']].map(([v, lb]) => `<option value="${v}"${v === (e.rep || '') ? ' selected' : ''}>${lb}</option>`).join('')}</select></label>
+        <label class="field" id="ev-count"${e.rep ? '' : ' hidden'}><span class="field-label">回数（この日を含む）</span><input name="count" type="number" inputmode="numeric" min="2" max="${C.MAX_REPEAT}" value="${esc(e.count || 4)}"></label>
+      </div><p class="hint" id="ev-rep-note"${e.rep ? '' : ' hidden'}>作ったあとは、1件ずつの予定になります。</p>` : ''}
       ${src}${linked}
       <div class="sheet-actions">
         ${isNew ? '' : `<button type="button" class="danger" data-act="cal-delete" data-id="${ev.id}" data-back="${back}">削除</button>`}
@@ -1646,6 +1663,15 @@ function eventForm(ev, { date = today(), back = '' } = {}) {
   $('#sheet-body').scrollTop = 0;
   const form = $('#ev-form');
   const f = form.elements;
+  // 種類の「＋ 追加」：入力途中の値をとっておき、追加したらその種類を選んだ状態で開き直す
+  $('#ev-cat-add').addEventListener('click', () => {
+    const vals = { title: f.title.value, cat: f.cat.value, date: f.date.value, end: f.end.value || null, memo: f.memo.value };
+    if (isNew) Object.assign(vals, { rep: f.rep.value, count: f.count.value });
+    catAddSheet({
+      onDone: (c) => eventForm(ev, { back, draft: { ...vals, cat: c.id } }),
+      onCancel: () => eventForm(ev, { back, draft: vals }),
+    });
+  });
   $('#ev-cats').addEventListener('click', (x) => {
     const b = x.target.closest('[data-cat]');
     if (!b) return;
@@ -1711,7 +1737,7 @@ function calManageSheet() {
         </span></li>`,
       )
       .join('')}</ul>
-    <div class="row2 add-cat"><input id="new-cat-name" placeholder="新しい種類の名前" autocomplete="off"><button type="button" class="ghost" data-act="cat-add">追加</button></div>
+    <button type="button" class="ghost" data-act="cat-add">種類を追加</button>
     <p class="hint">削除した種類の予定は「未分類」になります。</p>
 
     <h2 class="sheet-h2">費用の科目と種類</h2>
@@ -1811,6 +1837,63 @@ function importSheet(name, items) {
   draw();
 }
 
+// 種類を追加する。問題があればその内容を、なければ追加した種類を返す。「未分類」はいちばん下のままにする
+async function addCat(name, color) {
+  name = (name || '').trim();
+  if (!name) return { error: '種類の名前を入力してください' };
+  if (state.calendar.cats.some((c) => c.name === name)) return { error: '同じ名前の種類があります' };
+  const cat = { id: L.uid(), name, color: PALETTE.includes(color) ? color : unusedCatColor(), order: 0 };
+  await commit((s) => {
+    const c = s.calendar;
+    const order = Math.max(-1, ...c.cats.filter((x) => x.id !== C.UNCAT).map((x) => x.order));
+    for (const x of c.cats) if (x.order > order) x.order++;
+    cat.order = order + 1;
+    c.cats.push(cat);
+  });
+  return { cat };
+}
+
+// まだほかの種類に使われていない色のうち最初のもの
+function unusedCatColor() {
+  const used = new Set(state.calendar.cats.map((c) => c.color));
+  return PALETTE.find((k) => k !== 's-other' && !used.has(k)) || 's9';
+}
+
+// 種類の追加の画面（名前と色）。onDone(追加した種類)、onCancel()
+function catAddSheet({ onDone, onCancel }) {
+  openSheet(`
+    <h2>予定の種類の追加</h2>
+    <form id="cat-form">
+      <label class="field"><span class="field-label">名前</span><input name="catname" autocomplete="off" placeholder="例：サークル"></label>
+      <span class="field-label">色</span>
+      ${swatchPicker(unusedCatColor(), 'catcolor')}
+      <p class="hint">名前・色の変更と削除は、設定画面の「予定の種類」か、カレンダーの「種類・取り込み」からできます。</p>
+      <div class="sheet-actions">
+        <button type="button" class="ghost" id="cat-cancel">戻る</button>
+        <button type="submit" class="primary">追加</button>
+      </div>
+    </form>`);
+  $('#sheet-body').scrollTop = 0;
+  const form = $('#cat-form');
+  bindSwatches(form);
+  $('#cat-cancel').addEventListener('click', onCancel);
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const r = await addCat(form.elements.catname.value, form.elements.catcolor.value);
+    if (r.error) return toast(r.error);
+    onDone(r.cat);
+    toast(`予定の種類「${r.cat.name}」を追加しました`);
+  });
+  form.elements.catname.focus();
+}
+
+// 種類の操作が終わったあと：設定画面からならシートを閉じ、カレンダーからなら種類の管理に戻る
+function catBack(from, sheetOpen = true) {
+  if (from === 'settings') {
+    if (sheetOpen) closeSheet();
+  } else calManageSheet();
+}
+
 // ---- 入力画面の「予定」の1行
 // 自動入力（固定費）・開始残高・評価額の仕訳は予定につながない
 function eventPickAllowed() {
@@ -1838,7 +1921,7 @@ function newEventFields() {
       <input type="text" data-field="newEvent" value="${esc(d.newEvent)}" placeholder="予定名（例：13-面接）" autocomplete="off" aria-label="新しい予定の名前">
       <div class="chips ev-cats" role="radiogroup" aria-label="新しい予定の種類">${C.sortedCats(state.calendar)
         .map((c) => `<button type="button" role="radio" aria-checked="${c.id === cur}" class="chip chip-sm${c.id === cur ? ' on' : ''}" data-act="ev-cat" data-id="${c.id}"><span class="sw" style="background:${catColor(c)}"></span>${esc(c.name)}</button>`)
-        .join('')}</div>
+        .join('')}<button type="button" class="chip chip-sm chip-add" data-act="ev-cat-add">＋ 追加</button></div>
       <p class="hint">${auto ? '種類は科目から自動で選んでいます。タップで変えられます。' : '種類を選びました。もう一度タップすると、科目から自動で選ぶのに戻ります。'}保存すると、この日の予定としてカレンダーに作り、この記録とつなぎます。同じ日に同じ名前の予定があれば、それにつなぎます。</p>
     </div>`;
 }
@@ -1921,27 +2004,17 @@ const CAL_ACTIONS = {
     daySheet(d);
   },
   'cal-manage': () => calManageSheet(),
-  'cat-add': async () => {
-    const name = $('#new-cat-name').value.trim();
-    if (!name) return toast('種類の名前を入力してください');
-    if (state.calendar.cats.some((c) => c.name === name)) return toast('同じ名前の種類があります');
-    const used = new Set(state.calendar.cats.map((c) => c.color));
-    const color = PALETTE.find((k) => k !== 's-other' && !used.has(k)) || 's9';
-    await commit((s) => {
-      const c = s.calendar;
-      const order = Math.max(-1, ...c.cats.filter((x) => x.id !== C.UNCAT).map((x) => x.order));
-      // 「未分類」はいちばん下のままにする
-      for (const x of c.cats) if (x.order > order) x.order++;
-      c.cats.push({ id: L.uid(), name, color, order: order + 1 });
-    });
-    calManageSheet();
+  'cat-add': (el) => {
+    const back = () => catBack(el.dataset.from);
+    catAddSheet({ onDone: back, onCancel: back });
   },
   'cat-rename': async (el) => {
     const c = state.calendar.cats.find((x) => x.id === el.dataset.id);
     const name = prompt('新しい名前', c.name);
     if (!name || !name.trim()) return;
+    if (state.calendar.cats.some((x) => x !== c && x.name === name.trim())) return toast('同じ名前の種類があります');
     await commit(() => (c.name = name.trim()));
-    calManageSheet();
+    catBack(el.dataset.from, false);
   },
   'cat-move': async (el) => {
     const list = C.sortedCats(state.calendar);
@@ -1957,17 +2030,18 @@ const CAL_ACTIONS = {
     const n = state.calendar.events.filter((e) => e.cat === c.id).length;
     if (!confirm(`種類「${c.name}」を削除しますか？${n ? `この種類の予定（${n}件）は「未分類」になります。` : ''}`)) return;
     await commit((s) => C.removeCat(s.calendar, c.id));
-    calManageSheet();
+    catBack(el.dataset.from, false);
   },
   'cat-color': (el) => {
     const c = state.calendar.cats.find((x) => x.id === el.dataset.id);
+    const from = el.dataset.from || '';
     openSheet(`
       <h2>色の変更</h2>
       <form id="color-form">
         <p class="color-preview"><span class="sw" id="color-sw" style="background:${catColor(c)}"></span>${esc(c.name)}</p>
         ${swatchPicker(c.color)}
         <div class="sheet-actions">
-          <button type="button" class="ghost" data-act="cal-manage">戻る</button>
+          ${from === 'settings' ? '<button type="button" class="ghost" data-act="close-sheet">閉じる</button>' : '<button type="button" class="ghost" data-act="cal-manage">戻る</button>'}
           <button type="submit" class="primary">保存</button>
         </div>
       </form>`);
@@ -1977,7 +2051,8 @@ const CAL_ACTIONS = {
       ev.preventDefault();
       const k = form.elements.acccolor.value;
       await commit(() => (c.color = k));
-      calManageSheet();
+      catBack(from);
+      toast(`「${c.name}」の色を変更しました`);
     });
   },
   'ics-pick': () => $('#ics-file').click(),
@@ -2000,6 +2075,15 @@ const CAL_ACTIONS = {
     d.newEventCat = d.newEventCat === el.dataset.id ? null : el.dataset.id;
     renderEventPicker();
   },
+  'ev-cat-add': () =>
+    catAddSheet({
+      onDone: (c) => {
+        ui.draft.newEventCat = c.id; // 追加した種類を選んだ状態にする
+        closeSheet();
+        render();
+      },
+      onCancel: () => closeSheet(),
+    }),
   'ev-new': () => {
     const d = ui.draft;
     d.newEventOpen = !d.newEventOpen;

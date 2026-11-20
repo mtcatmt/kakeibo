@@ -413,12 +413,10 @@ body.cal-fixed { overscroll-behavior-y: none; }
   width: 100%; border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 9px 10px; font: inherit; font-size: 16px; color: var(--text); resize: vertical;
 }
 .acccat { border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 6px 8px; font-size: 15px; width: 100%; }
-.add-cat, .add-rule { margin-top: 10px; grid-template-columns: 1fr auto; align-items: center; }
-.add-rule { grid-template-columns: 1fr 1fr; }
-.add-cat input, .add-rule input, .add-rule select {
+.add-rule { margin-top: 10px; grid-template-columns: 1fr 1fr; align-items: center; }
+.add-rule input, .add-rule select {
   width: 100%; border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 9px 10px; font-size: 16px; min-height: 42px;
 }
-.add-cat button.ghost { margin: 0; padding: 10px 16px; }
 .acc-btns .link:disabled { opacity: 0.3; }
 .ev-chip { max-width: 100%; }
 .ev-chip-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
