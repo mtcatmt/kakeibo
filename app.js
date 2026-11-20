@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.15.0';
+const APP_VERSION = '1.16.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -1468,27 +1468,26 @@ function weekLabel(ws) {
   return `${y}${m1}月${Number(ws.slice(8))}日〜${m1 === m2 ? '' : m2 + '月'}${Number(we.slice(8))}日`;
 }
 
-// 月表示の1か月分。その月の日だけマスを出し、予定は種類の色の帯で、入りきらない分は「+2」のように数で出す
+// 月表示の1か月分の週。月の間に空白を作らず、週を続けて並べる。
+// 週は土曜日の月に入れる（その月の1日を含む週から、土曜日がその月の最後の週まで）。前後の月の分と重ならず、すき間もできない。
+// 各月の1日は「12/1」のように月も出し、1〜7日のマスの上と1日のマスの左に線を引いて、月の境目を階段状に示す。
+// 予定は種類の色の帯で、入りきらない分は「+2」のように数で出す
 function monthBlock(ym) {
   const t = today();
-  const last = L.lastDayOf(ym);
-  let html = `<section class="mblock" data-ym="${ym}"><h3 class="mtitle${L.monthOf(t) === ym ? ' now' : ''}">${monthLabel(ym)}</h3><div class="mgrid">`;
-  for (let ws = C.startOfWeek(`${ym}-01`); ws <= last; ws = C.addDays(ws, 7)) {
-    const inMonth = (c) => L.monthOf(C.addDays(ws, c)) === ym;
+  let html = `<section class="mblock" data-ym="${ym}">`;
+  for (let ws = C.startOfWeek(`${ym}-01`); L.monthOf(C.addDays(ws, 6)) === ym; ws = C.addDays(ws, 7)) {
     const items = C.layoutWeek(state.calendar, ws);
     // その日に、段に入りきらない予定があるか
-    const more = Array.from({ length: 7 }, (_, c) => inMonth(c) && items.some((x) => x.lane >= MONTH_LANES && x.col <= c && c < x.col + x.span));
-    const shown = (x, c) => inMonth(c) && (x.lane < MONTH_LANES - 1 || (x.lane === MONTH_LANES - 1 && !more[c]));
+    const more = Array.from({ length: 7 }, (_, c) => items.some((x) => x.lane >= MONTH_LANES && x.col <= c && c < x.col + x.span));
+    const shown = (x, c) => x.lane < MONTH_LANES - 1 || (x.lane === MONTH_LANES - 1 && !more[c]);
     html += '<div class="mweek">';
     for (let c = 0; c < 7; c++) {
       const d = C.addDays(ws, c);
-      if (!inMonth(c)) {
-        html += `<span class="mday blank" style="grid-column:${c + 1}"></span>`;
-        continue;
-      }
+      const day = Number(d.slice(8));
       const hol = C.holidayName(d);
-      const cls = ['mday', d === t ? 'today' : '', dayKind(d)].filter(Boolean).join(' ');
-      html += `<button type="button" class="${cls}" style="grid-column:${c + 1}" data-act="cal-day" data-date="${d}" aria-label="${dateLabel(d)}${hol ? ' ' + hol : ''}"${hol ? ` title="${esc(hol)}"` : ''}><span class="mnum">${Number(d.slice(8))}</span></button>`;
+      const cls = ['mday', d === t ? 'today' : '', dayKind(d), day <= 7 ? 'mfirst-week' : '', day === 1 && c > 0 ? 'mfirst' : ''].filter(Boolean).join(' ');
+      const num = day === 1 ? `${Number(d.slice(5, 7))}/1` : day;
+      html += `<button type="button" class="${cls}" style="grid-column:${c + 1}" data-act="cal-day" data-date="${d}" aria-label="${dateLabel(d)}${hol ? ' ' + hol : ''}"${hol ? ` title="${esc(hol)}"` : ''}><span class="mnum${day === 1 ? ' m1' : ''}">${num}</span></button>`;
     }
     for (const x of items) {
       // 段に入る日だけを、続いた区間ごとの帯にする
@@ -1516,7 +1515,7 @@ function monthBlock(ym) {
     }
     html += '</div>';
   }
-  return html + '</div></section>';
+  return html + '</section>';
 }
 
 // 週表示：7日分を縦に並べる

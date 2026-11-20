@@ -8,6 +8,7 @@
   --muted: #898781;
   --line: #e1e0d9;
   --axis: #c3c2b7;
+  --mline: #c3c2b7; /* カレンダーの月の境目の線 */
   --accent: #2a78d6;
   --accent-text: #ffffff;
   --danger: #d03b3b;
@@ -35,6 +36,7 @@
     --muted: #898781;
     --line: #2c2c2a;
     --axis: #383835;
+    --mline: #62615c;
     --accent: #3987e5;
     --danger: #e66767;
     --good-text: #0ca30c;
@@ -370,9 +372,6 @@ body.cal-fixed { overscroll-behavior-y: none; }
   position: relative; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
   background: var(--card); border-radius: 14px 14px 0 0; box-shadow: 0 0 0 1px var(--ring);
 }
-.mtitle { font-size: 15px; font-weight: 600; margin: 0; padding: 12px 10px 4px; border-top: 1px solid var(--line); }
-.mblock:first-child .mtitle { border-top: 0; }
-.mtitle.now { color: var(--accent); }
 .mweek {
   display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-template-rows: 22px repeat(3, 16px) 4px;
   row-gap: 2px; border-bottom: 1px solid var(--line);
@@ -382,14 +381,18 @@ body.cal-fixed { overscroll-behavior-y: none; }
   justify-content: center; align-items: flex-start; cursor: pointer; touch-action: manipulation; color: var(--text);
 }
 .mday:first-child { border-left: 0; }
-.mday.blank { cursor: default; }
 .mday:active { background: var(--sel); }
+/* 月の境目：各月の1〜7日のマスの上と、1日のマスの左に線（階段状になる） */
+.mday.mfirst-week { box-shadow: inset 0 2px 0 var(--mline); }
+.mday.mfirst { box-shadow: inset 0 2px 0 var(--mline), inset 2px 0 0 var(--mline); }
 .mday.sun { color: var(--bad-text); }
 .mday.sat { color: var(--accent); }
-.mnum { font-size: 12px; font-variant-numeric: tabular-nums; width: 20px; height: 20px; line-height: 20px; border-radius: 50%; text-align: center; }
+.mnum { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 20px; height: 20px; line-height: 20px; padding: 0 3px; border-radius: 10px; text-align: center; }
+.mnum.m1 { font-weight: 700; } /* 各月の1日（「12/1」） */
 .mday.today .mnum { background: var(--accent); color: var(--accent-text); font-weight: 700; opacity: 1; }
 .mbar, .mmore { pointer-events: none; font-size: 10.5px; line-height: 16px; height: 16px; white-space: nowrap; overflow: hidden; }
-.mbar { margin: 0 2px; padding: 0 3px; border-radius: 4px; text-overflow: clip; z-index: 1; }
+/* 予定名は中央ぞろえ。入りきらないときは、名前の始めが見えるように左から出る（text-align の決まり） */
+.mbar { margin: 0 2px; padding: 0 3px; border-radius: 4px; text-overflow: clip; text-align: center; z-index: 1; }
 .mbar b { font-weight: 700; }
 .mbar.cont { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: 0; }
 /* 一日の一部の予定（開始時刻がある）：種類の色を薄くした背景に、種類の色の文字（--c に種類の色を入れる）。
