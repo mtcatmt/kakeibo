@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.18.0';
+const APP_VERSION = '1.18.1';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -1201,7 +1201,7 @@ async function importBackup(file) {
     return toast('JSONとして読み込めませんでした');
   }
   const s = data && data.state ? data.state : data;
-  const err = L.validateState(s);
+  const err = L.validateState(s) || C.validateCalendar(s.calendar);
   if (err) return toast('このファイルは使えません：' + err);
   const when = data.exportedAt ? new Date(data.exportedAt).toLocaleString('ja-JP') : '日時不明';
   // カレンダーを付ける前のバックアップ（calendar がない）なら、今の予定を残す

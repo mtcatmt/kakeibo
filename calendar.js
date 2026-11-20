@@ -1,6 +1,6 @@
 // カレンダーの計算（画面に依存しない部分）。ledger.js と同じく Node.js からも読み込んでテストできる。
 // 予定は state.calendar に保存する。ledger.js の SCHEMA・migrate() は変えず、ensureCalendar() で用意する。
-import { uid, pad2, signedAmount } from './ledger.js';
+import { uid, pad2, signedAmount, isId, isObj, optStr } from './ledger.js';
 
 export const UNCAT = 'uncat'; // 「未分類」の種類のid（削除できない）
 export const MAX_REPEAT = 60; // 予定を繰り返して作るときの最大の回数
@@ -333,6 +333,49 @@ export function ensureCalendar(state) {
   const ids = new Set(c.events.map((e) => e.id));
   for (const e of state.entries) if (e.eventId && !ids.has(e.eventId)) delete e.eventId;
   return state;
+}
+
+// 復元するファイルの予定の部分として正しいかを調べる。問題があればその内容を、なければ null を返す。
+// id・色・日付は画面の HTML にそのまま入るので、ledger.js の validateState と同じく決まった文字だけを許す。
+// calendar がない（カレンダーを付ける前の）バックアップは、そのまま通す
+export function validateCalendar(cal) {
+  if (cal == null) return null;
+  if (!isObj(cal)) return '予定のデータが正しくありません';
+  for (const k of ['events', 'cats', 'rules', 'imports']) {
+    if (cal[k] != null && !Array.isArray(cal[k])) return '予定のデータが正しくありません';
+  }
+  const isMin = (v) => Number.isSafeInteger(v) && v >= 0 && v <= 1440;
+  for (const [i, c] of (cal.cats || []).entries()) {
+    const at = `${i + 1}番目の予定の種類`;
+    if (!isObj(c) || !isId(c.id)) return `${at}のidが正しくありません`;
+    if (typeof c.name !== 'string') return `${at}の名前が正しくありません`;
+    if (!isId(c.color)) return `${at}の色が正しくありません`;
+    if (c.order != null && typeof c.order !== 'number') return `${at}の並び順が正しくありません`;
+  }
+  for (const [i, e] of (cal.events || []).entries()) {
+    const at = `${i + 1}番目の予定`;
+    if (!isObj(e) || !isId(e.id)) return `${at}のidが正しくありません`;
+    if (typeof e.title !== 'string' || !optStr(e.memo)) return `${at}の名前かメモが正しくありません`;
+    if (!isDate(e.date) || (e.end != null && !isDate(e.end))) return `${at}の日付が正しくありません`;
+    if (e.cat != null && !isId(e.cat)) return `${at}の種類が正しくありません`;
+    if (e.src != null && !isId(e.src)) return `${at}の作り方が正しくありません`;
+    if (e.time != null && (!isObj(e.time) || !isMin(e.time.start) || (e.time.end != null && !isMin(e.time.end)))) {
+      return `${at}の時刻が正しくありません`;
+    }
+    if (!optStr(e.series) || !optStr(e.importUid) || (e.importId != null && !isId(e.importId))) return `${at}のつながりが正しくありません`;
+  }
+  for (const [i, r] of (cal.rules || []).entries()) {
+    if (!isObj(r) || typeof r.text !== 'string' || !isId(r.cat)) return `${i + 1}番目の取り込みの決まりが正しくありません`;
+  }
+  for (const [i, x] of (cal.imports || []).entries()) {
+    const ok = isObj(x) && isId(x.id) && typeof x.name === 'string' && typeof x.at === 'number' && Number.isSafeInteger(x.count);
+    if (!ok) return `${i + 1}番目の取り込んだファイルの記録が正しくありません`;
+  }
+  if (cal.accCat != null) {
+    if (!isObj(cal.accCat)) return '科目と予定の種類の対応が正しくありません';
+    for (const [k, v] of Object.entries(cal.accCat)) if (!isId(k) || !isId(v)) return '科目と予定の種類の対応が正しくありません';
+  }
+  return null;
 }
 
 export const sortedCats = (cal) => [...cal.cats].sort((a, b) => a.order - b.order);

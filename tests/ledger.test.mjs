@@ -236,3 +236,40 @@ test('履歴の検索・絞り込み', () => {
   assert.deepEqual(ids(L.filterEntries(s, { q: '4,000' })), ['e0']);
   assert.deepEqual(ids(L.filterEntries(s, { q: '食費 昼' })), ['e2']);
 });
+
+test('復元するデータ：正しいデータは通り、HTML に入り込む値や形の違う値は拒否される', () => {
+  const ok = withEntries([
+    { date: '2026-04-01', kind: 'expense', eventId: 'ev1', lines: [{ acc: 'food', side: 'dr', amount: 800 }, { acc: 'cash', side: 'cr', amount: 800 }] },
+  ]);
+  ok.accounts.find((a) => a.id === 'food').color = 's3';
+  ok.settings.last = { expenseFrom: 'cash', advMode: 'split', people: 3 };
+  assert.equal(L.validateState(ok), null);
+  assert.equal(L.validateState(L.migrate(structuredClone(ok))), null);
+
+  const bad = (edit) => {
+    const s = structuredClone(ok);
+    edit(s);
+    return L.validateState(s);
+  };
+  const xss = '"><img src=x onerror=alert(1)>';
+  assert.match(bad((s) => (s.accounts[0].id = xss)), /勘定科目のid/);
+  assert.match(bad((s) => (s.accounts[0].type = 'x')), /区分/);
+  assert.match(bad((s) => (s.accounts.find((a) => a.id === 'food').color = 'red;background:url(x)')), /色/);
+  assert.match(bad((s) => s.accounts.push({ ...s.accounts[0] })), /同じid/);
+  assert.match(bad((s) => (s.entries[0].id = xss)), /仕訳のid/);
+  assert.match(bad((s) => (s.entries[0].date = '2026/04/01')), /日付/);
+  assert.match(bad((s) => (s.entries[0].lines[0].amount = 800.5)), /整数/);
+  assert.match(bad((s) => (s.entries[0].lines[0].amount = '800')), /整数/);
+  assert.match(bad((s) => (s.entries[0].lines[0].side = 'x')), /借方・貸方/);
+  assert.match(bad((s) => (s.entries[0].eventId = xss)), /予定のid/);
+  assert.match(bad((s) => (s.entries[0].lines[0].acc = 'nope')), /存在しない勘定科目/);
+  assert.match(bad((s) => (s.recurring[0].id = xss)), /固定費のid/);
+  assert.match(bad((s) => (s.recurring[0].day = '<b>1</b>')), /日が/);
+  assert.match(bad((s) => (s.recurring[0].amount = 1.5)), /整数/);
+  assert.match(bad((s) => (s.recurring[0].startMonth = xss)), /開始月/);
+  assert.match(bad((s) => (s.settings.last.expenseFrom = xss)), /前回の入力/);
+  assert.match(bad((s) => (s.settings.last.people = '2"')), /前回の入力/);
+  assert.match(bad((s) => (s.settings.backupDays = xss)), /日数/);
+  assert.equal(L.validateState(null), '形式が違います');
+  assert.match(L.validateState({ accounts: [] }), /見つかりません/);
+});

@@ -121,17 +121,83 @@ export function migrate(s) {
   return s;
 }
 
+// 復元するファイルの中身を確かめるための形。id・色・日付は画面の HTML にそのまま入るので、決まった文字だけを許す。
+// 細工したファイルを読んだときに、画面にスクリプトが入り込まないようにするため
+const ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+export const isId = (v) => typeof v === 'string' && ID_RE.test(v);
+const isDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+const isMonth = (v) => typeof v === 'string' && /^\d{4}-\d{2}$/.test(v);
+const isInt = (v, min = -Infinity, max = Infinity) => Number.isSafeInteger(v) && v >= min && v <= max;
+export const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+export const optStr = (v) => v == null || typeof v === 'string';
+
+function checkAccount(a, i) {
+  const at = `${i + 1}番目の勘定科目`;
+  if (!isObj(a) || !isId(a.id)) return `${at}のidが正しくありません`;
+  if (!TYPE_ORDER.includes(a.type)) return `${at}の区分が正しくありません`;
+  if (typeof a.name !== 'string') return `${at}の名前が正しくありません`;
+  if (a.color != null && !isId(a.color)) return `${at}の色が正しくありません`;
+  return null;
+}
+
+function checkEntry(e, i, ids) {
+  const at = `${i + 1}番目の仕訳`;
+  if (!isObj(e) || !isId(e.id)) return `${at}のidが正しくありません`;
+  if (!isDate(e.date)) return `${at}の日付が正しくありません`;
+  if (!optStr(e.memo)) return `${at}のメモが正しくありません`;
+  if (e.kind != null && !isId(e.kind)) return `${at}の種類が正しくありません`;
+  if (e.eventId != null && !isId(e.eventId)) return `${at}の予定のidが正しくありません`;
+  if (!Array.isArray(e.lines)) return `${at}の行が見つかりません`;
+  for (const l of e.lines) {
+    if (!isObj(l) || !ids.has(l.acc)) return `${at}に存在しない勘定科目があります`;
+    if (l.side !== 'dr' && l.side !== 'cr') return `${at}の借方・貸方が正しくありません`;
+    if (!isInt(l.amount)) return `${at}の金額が整数ではありません`;
+  }
+  return null;
+}
+
+function checkRecurring(r, i, ids) {
+  const at = `${i + 1}番目の固定費`;
+  if (!isObj(r) || !isId(r.id)) return `${at}のidが正しくありません`;
+  if (typeof r.name !== 'string') return `${at}の名前が正しくありません`;
+  if (!isInt(r.amount)) return `${at}の金額が整数ではありません`;
+  if (!ids.has(r.debit) || !ids.has(r.credit)) return `${at}に存在しない勘定科目があります`;
+  if (r.freq != null && r.freq !== 'monthly' && r.freq !== 'yearly') return `${at}の頻度が正しくありません`;
+  if (r.month != null && !isInt(r.month, 1, 12)) return `${at}の月が正しくありません`;
+  if (!isInt(r.day, 1, 31)) return `${at}の日が正しくありません`;
+  if (r.startMonth != null && !isMonth(r.startMonth)) return `${at}の開始月が正しくありません`;
+  if (r.lastMonth != null && !isMonth(r.lastMonth)) return `${at}の最後に作った月が正しくありません`;
+  return null;
+}
+
+function checkSettings(st) {
+  if (st == null) return null;
+  if (!isObj(st)) return '設定が正しくありません';
+  if (st.backupDays != null && !isInt(st.backupDays, 1, 365)) return 'バックアップの日数が正しくありません';
+  if (!optStr(st.lastBackupAt)) return 'バックアップの日時が正しくありません';
+  if (st.last == null) return null;
+  if (!isObj(st.last)) return '前回の入力の記録が正しくありません';
+  for (const [k, v] of Object.entries(st.last)) {
+    if (k === 'people' ? !isInt(v, 1, 99) : v != null && !isId(v)) return '前回の入力の記録が正しくありません';
+  }
+  return null;
+}
+
+// 復元するデータ（帳簿の部分）として正しいかを調べる。問題があればその内容を、なければ null を返す。
+// 予定（calendar）は calendar.js の validateCalendar で調べる
 export function validateState(s) {
-  if (!s || typeof s !== 'object') return '形式が違います';
+  if (!isObj(s)) return '形式が違います';
   if (!Array.isArray(s.accounts) || !Array.isArray(s.entries) || !Array.isArray(s.recurring)) {
     return '勘定科目・仕訳・固定費のいずれかが見つかりません';
   }
+  if (s.schema != null && !isInt(s.schema, 1)) return 'データの版が正しくありません';
+  let err = null;
+  if (s.accounts.some((a, i) => (err = checkAccount(a, i)))) return err;
   const ids = new Set(s.accounts.map((a) => a.id));
-  for (const e of s.entries) {
-    if (!Array.isArray(e.lines)) return `仕訳 ${e.id} の行が見つかりません`;
-    for (const l of e.lines) if (!ids.has(l.acc)) return `仕訳 ${e.id} に存在しない勘定科目があります`;
-  }
-  return null;
+  if (ids.size !== s.accounts.length) return '同じidの勘定科目があります';
+  if (s.entries.some((e, i) => (err = checkEntry(e, i, ids)))) return err;
+  if (s.recurring.some((r, i) => (err = checkRecurring(r, i, ids)))) return err;
+  return checkSettings(s.settings);
 }
 
 export function lineTotals(lines) {

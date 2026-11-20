@@ -449,3 +449,32 @@ test('区切りのない時間：時刻だけ・時刻のあとが空白・「:�
   assert.deepEqual(C.splitTitle('15時半歯医者'), ['15時半', '歯医者']);
   assert.deepEqual(C.splitTitle('19 飲み'), ['19', ' 飲み']);
 });
+
+test('復元するデータ：予定の部分は正しければ通り、HTML に入り込む値は拒否される', () => {
+  const cal = cal0();
+  C.addEvent(cal, C.newEvent({ title: '13-面接', date: '2026-04-01', cat: 'c_job', time: { start: T(13), end: null } }));
+  C.addEvent(cal, C.newEvent({ title: '合宿', date: '2026-04-03', end: '2026-04-05', src: 'timetree', importUid: 'abc@x.com#2026-04-03', importId: 'imp1', series: 'tt:abc@x.com' }));
+  cal.rules.push({ text: '面接', cat: 'c_job' });
+  cal.imports.push({ id: 'imp1', name: 'tt.ics', at: Date.now(), count: 1 });
+  assert.equal(C.validateCalendar(cal), null);
+  assert.equal(C.validateCalendar(undefined), null); // カレンダーを付ける前のバックアップ
+  assert.equal(C.validateCalendar(structuredClone(C.ensureCalendar({ ...L.defaultState(), calendar: cal }).calendar)), null);
+
+  const bad = (edit) => {
+    const c = structuredClone(cal);
+    edit(c);
+    return C.validateCalendar(c);
+  };
+  const xss = '"><img src=x onerror=alert(1)>';
+  assert.match(bad((c) => (c.cats[0].id = xss)), /予定の種類のid/);
+  assert.match(bad((c) => (c.cats[0].color = 's1);background:url(x')), /色/);
+  assert.match(bad((c) => (c.events[0].id = xss)), /予定のid/);
+  assert.match(bad((c) => (c.events[0].date = xss)), /日付/);
+  assert.match(bad((c) => (c.events[0].date = '2026-02-30')), /日付/);
+  assert.match(bad((c) => (c.events[0].cat = xss)), /種類/);
+  assert.match(bad((c) => (c.events[0].time = { start: '<b>', end: null })), /時刻/);
+  assert.match(bad((c) => (c.rules[0].cat = xss)), /決まり/);
+  assert.match(bad((c) => (c.imports[0].count = '1<b>')), /取り込んだファイル/);
+  assert.match(bad((c) => (c.accCat.food = xss)), /対応/);
+  assert.match(bad((c) => (c.events = 'x')), /予定のデータ/);
+});
