@@ -64,7 +64,16 @@ export function splitTitle(title) {
   return t ? [title.slice(0, t.len), title.slice(t.len)] : ['', title];
 }
 
+// 0時からの分 → '9:30'（24時以降は '24:00' のように書く）
+export const clockLabel = (min) => `${Math.floor(min / 60)}:${pad2(min % 60)}`;
+// { start, end } → '15:00〜16:00'（end がなければ '15:00〜'）
+export const timeLabel = (t) => (t ? `${clockLabel(t.start)}〜${t.end != null ? clockLabel(t.end) : ''}` : '');
+
 // ---------------------------------------------------------------- 予定
+// 予定の開始時刻（0時からの分）。TimeTreeから取り込んだ時刻（ev.time）か、予定名の先頭の時間。なければ null
+export const startOf = (ev) => ev.time?.start ?? parseTime(ev.title)?.start ?? null;
+// 一日の一部の予定か（開始時刻がある）。そうでなければ一日の予定
+export const isTimed = (ev) => startOf(ev) != null;
 export const isMultiDay = (ev) => !!ev.end && ev.end > ev.date;
 export const lastDay = (ev) => (isMultiDay(ev) ? ev.end : ev.date);
 export const occursOn = (ev, d) => ev.date <= d && d <= lastDay(ev);
@@ -83,13 +92,13 @@ export function eventsOn(cal, d) {
 // 1日の予定を、その日の並び順に入れる。startMin（0時からの分）があれば、
 // その日の予定のうち開始時刻が自分より遅い最初の予定の前に、なければいちばん下に入れる。
 // 入れたあと、その日の並び順を 0, 1, 2… に振り直す。
-export function placeEvent(cal, ev, startMin = parseTime(ev.title)?.start ?? null) {
+export function placeEvent(cal, ev, startMin = startOf(ev)) {
   const list = cal.events.filter((e) => e !== ev && !isMultiDay(e) && e.date === ev.date).sort((a, b) => a.order - b.order);
   let i = list.length;
   if (startMin != null && !isMultiDay(ev)) {
     const j = list.findIndex((e) => {
-      const t = parseTime(e.title);
-      return t && t.start > startMin;
+      const t = startOf(e);
+      return t != null && t > startMin;
     });
     if (j >= 0) i = j;
   }
@@ -98,12 +107,66 @@ export function placeEvent(cal, ev, startMin = parseTime(ev.title)?.start ?? nul
   if (isMultiDay(ev)) ev.order = 0;
 }
 
-// 予定を作る（cal には入れない）
-export function newEvent({ title, date, end = null, cat = UNCAT, memo = '', src = 'manual', importUid = null, importId = null }) {
+// 予定を作る（cal には入れない）。
+// series：繰り返しで作った予定のまとまりのid。time：TimeTreeから取り込んだ時刻 { start, end }（0時からの分。end は null も）
+export function newEvent({ title, date, end = null, cat = UNCAT, memo = '', src = 'manual', importUid = null, importId = null, series = null, time = null }) {
   const ev = { id: uid(), title, date, end: end && end > date ? end : null, cat, order: 0, memo, src, createdAt: Date.now() };
   if (importUid) ev.importUid = importUid;
   if (importId) ev.importId = importId;
+  if (series) ev.series = series;
+  if (time) ev.time = time;
   return ev;
+}
+
+// 繰り返しの予定のまとまり（日付の順）。まとまりがなければ、その予定だけ
+export function seriesOf(cal, ev) {
+  if (!ev.series) return [ev];
+  return cal.events.filter((e) => e.series === ev.series).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
+// 繰り返しの予定を削除する範囲の予定のid。scope：'one'（この予定だけ）| 'after'（この日以降）| 'all'（すべて）
+export function seriesTargets(cal, ev, scope) {
+  if (scope === 'one' || !ev.series) return [ev.id];
+  return seriesOf(cal, ev)
+    .filter((e) => scope === 'all' || e.date >= ev.date)
+    .map((e) => e.id);
+}
+
+// TimeTreeの繰り返しの予定のまとまりのid（取り込み元の UID の「#日付」より前）。繰り返しでなければ null
+const importSeries = (importUid) => (importUid && importUid.includes('#') ? 'tt:' + importUid.slice(0, importUid.lastIndexOf('#')) : null);
+
+// まとまりのidがない、前の版で作った予定に付ける。
+// TimeTreeの繰り返しは取り込み元の UID から。予定の追加画面で繰り返して作った予定は、
+// 予定名・種類・メモ・日数が同じで、作った時刻が1秒以内に続いているものを1つのまとまりとする（1件ずつ保存する画面では、1秒以内に続けて作れない）
+const SERIES_GAP_MS = 1000;
+export function inferSeries(cal) {
+  for (const e of cal.events) if (!e.series && importSeries(e.importUid)) e.series = importSeries(e.importUid);
+  const groups = new Map();
+  for (const e of cal.events) {
+    if (e.series || e.src !== 'manual' || typeof e.createdAt !== 'number') continue;
+    const k = JSON.stringify([e.title, e.cat, e.memo || '', isMultiDay(e) ? diffDays(e.date, e.end) : 0]);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(e);
+  }
+  for (const list of groups.values()) {
+    if (list.length < 2) continue;
+    list.sort((a, b) => a.createdAt - b.createdAt);
+    let run = [list[0]];
+    const flush = () => {
+      if (run.length < 2) return;
+      const id = uid();
+      for (const e of run) e.series = id;
+    };
+    for (let i = 1; i < list.length; i++) {
+      const prev = list[i - 1], e = list[i];
+      if (e.createdAt - prev.createdAt <= SERIES_GAP_MS && e.date !== prev.date) run.push(e);
+      else {
+        flush();
+        run = [e];
+      }
+    }
+    flush();
+  }
 }
 
 // 予定を cal に加え、その日の並び順に入れる
@@ -242,6 +305,7 @@ export function ensureCalendar(state) {
     if (!catIds.has(e.cat)) e.cat = UNCAT;
     if (typeof e.order !== 'number') e.order = 0;
   }
+  inferSeries(c);
   const ids = new Set(c.events.map((e) => e.id));
   for (const e of state.entries) if (e.eventId && !ids.has(e.eventId)) delete e.eventId;
   return state;
@@ -323,8 +387,9 @@ export function holidaysOf(y) {
 export const holidayName = (d) => holidaysOf(d.slice(0, 4)).get(d) || null;
 
 // ---------------------------------------------------------------- .ics の読み取り
-// 返す値：[{ uid, title, date, end, startMin, memo, labels, color }]。
-// 終日の予定の DTEND は翌日を指すので1日引く。時刻つきの予定は日本時間の日付だけ使う。
+// 返す値：[{ uid, title, date, end, startMin, endMin, memo, labels, color }]。startMin・endMin は終日の予定では null。
+// 終日の予定の DTEND は翌日を指すので1日引く。時刻つきの予定の日付と時刻は、UTC（末尾 Z）なら日本時間に直し、
+// TZID のついた時刻はその時間帯のまま使う（海外で入れた予定は現地の日付になる）。
 // 繰り返し（RRULE・RDATE）は1回ずつの予定に分け、until（'YYYY-MM-DD'）より後は作らない。EXDATE の日は作らない。
 export function parseICS(text, { until }) {
   const lines = String(text).replace(/\r\n?/g, '\n').replace(/\n[ \t]/g, '').split('\n');
@@ -407,6 +472,8 @@ function expandEvent(props, until) {
   }
   if (last < s.date) last = s.date;
   const span = diffDays(s.date, last);
+  // 終わりの時刻。翌日の0:00に終わる予定は 24:00 とする
+  const endMin = s.allDay || !e || e.allDay ? null : e.min === 0 && e.date > s.date ? 1440 : e.min;
 
   const memoParts = [];
   if (get('DESCRIPTION')) memoParts.push(unescape(get('DESCRIPTION').value).trim());
@@ -417,6 +484,7 @@ function expandEvent(props, until) {
     uid: get('UID')?.value.trim() || '',
     title: unescape(get('SUMMARY')?.value || '').trim() || '（名前なし）',
     startMin: s.min,
+    endMin,
     memo: memoParts.filter(Boolean).join('\n'),
     labels,
     color,
@@ -566,14 +634,15 @@ export function planImport(cal, items) {
   return { fresh, dup, from: dates[0] || null, to: dates[dates.length - 1] || null };
 }
 
-// 取り込む：時刻の早い順にその日の並び順へ入れる。返す値は取り込みの記録
+// 取り込む：時刻の早い順にその日の並び順へ入れる。返す値は取り込みの記録。
+// 時刻は予定名に付けず、予定の time に保存する。繰り返しの予定は、取り込み元の UID ごとに1つのまとまり（series）にする
 export function applyImport(cal, fresh, { name, labelMap = {}, rules = cal.rules, at = Date.now() }) {
   const importId = uid();
   const sorted = [...fresh].sort((a, b) => (a.date === b.date ? (a.startMin ?? 1e9) - (b.startMin ?? 1e9) : a.date < b.date ? -1 : 1));
   for (const it of sorted) {
-    const ev = newEvent({ title: it.title, date: it.date, end: it.end, cat: catForImport(cal, it, labelMap, rules), memo: it.memo, src: 'timetree', importUid: it.uid || null, importId });
-    cal.events.push(ev);
-    placeEvent(cal, ev, null); // 時刻は予定名に付けないので、その日のいちばん下に（時刻の早い順に入る）
+    const time = it.startMin != null ? { start: it.startMin, end: it.endMin ?? null } : null;
+    const ev = newEvent({ title: it.title, date: it.date, end: it.end, cat: catForImport(cal, it, labelMap, rules), memo: it.memo, src: 'timetree', importUid: it.uid || null, importId, series: importSeries(it.uid), time });
+    addEvent(cal, ev); // 時刻つきは、その日の予定のうち開始時刻が遅い最初の予定の前に。終日はいちばん下に
   }
   const rec = { id: importId, name, at, count: sorted.length };
   cal.imports.push(rec);

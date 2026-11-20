@@ -283,3 +283,85 @@ test('毎月の第n営業日（土日・祝日を除く）', () => {
   // 第21営業日は、営業日が20日しかない月を飛ばす
   assert.ok(C.repeatDates('2027-01-01', 'bizday', 3, 21).every((d) => C.businessDayIndex(d) === 21));
 });
+
+test('一日の予定と一日の一部の予定：予定名の先頭の時間か、取り込んだ時刻があれば一日の一部', () => {
+  const ev = (title, extra = {}) => C.newEvent({ title, date: '2026-04-01', ...extra });
+  assert.equal(C.isTimed(ev('13-面接')), true);
+  assert.equal(C.isTimed(ev('面接')), false);
+  assert.equal(C.isTimed(ev('1-2限 統計')), false); // 大学の時限は時間として読まない
+  assert.equal(C.isTimed(ev('だいがく', { time: { start: T(9), end: T(18) } })), true);
+  assert.equal(C.startOf(ev('だいがく', { time: { start: T(9), end: null } })), T(9));
+  assert.equal(C.timeLabel({ start: T(9, 5), end: T(24) }), '9:05〜24:00');
+  assert.equal(C.timeLabel({ start: T(19), end: null }), '19:00〜');
+});
+
+test('.ics の取り込み：時刻を予定に保存し、繰り返しを1つのまとまりにする', () => {
+  const s = L.defaultState();
+  C.ensureCalendar(s);
+  const cal = s.calendar;
+  const items = C.parseICS(ICS, { until: '2026-01-20' });
+  assert.equal(items.find((x) => x.uid === 'timed-1').endMin, T(24)); // 翌日の0:00に終わる
+  assert.equal(items.find((x) => x.uid === 'allday-1').endMin, null);
+  C.applyImport(cal, C.planImport(cal, items).fresh, { name: 'a.ics' });
+  const by = (t) => cal.events.filter((e) => e.title === t);
+  assert.deepEqual(by('飲み')[0].time, { start: T(21), end: T(24) });
+  assert.equal('time' in by('合宿')[0], false); // 終日
+  const job = by('バイト');
+  assert.equal(job.length, 4);
+  assert.ok(job[0].series && job.every((e) => e.series === job[0].series));
+  assert.equal('series' in by('合宿')[0], false); // 繰り返しでない
+  // あとから入れた予定名に時間のある予定は、取り込んだ時刻の順の中に入る
+  C.addEvent(cal, C.newEvent({ title: '19-のみ', date: '2025-01-01' }));
+  C.addEvent(cal, C.newEvent({ title: '23-夜', date: '2025-01-01' }));
+  assert.deepEqual(C.eventsOn(cal, '2025-01-01').map((e) => e.title), ['19-のみ', '飲み', '23-夜']);
+});
+
+test('繰り返しの予定の削除：この予定だけ・この日以降・すべて', () => {
+  const s = L.defaultState();
+  C.ensureCalendar(s);
+  const cal = s.calendar;
+  const days = ['2026-04-06', '2026-04-13', '2026-04-20', '2026-04-27'];
+  const evs = days.map((d) => C.addEvent(cal, C.newEvent({ title: 'ゼミ', date: d, series: 'r1' })));
+  const other = C.addEvent(cal, C.newEvent({ title: 'ゼミ', date: '2026-04-13' })); // まとまりの外
+  assert.deepEqual(C.seriesOf(cal, evs[2]).map((e) => e.date), days);
+  assert.deepEqual(C.seriesOf(cal, other), [other]);
+  assert.deepEqual(C.seriesTargets(cal, evs[1], 'one'), [evs[1].id]);
+  assert.deepEqual(C.seriesTargets(cal, evs[1], 'after'), [evs[1].id, evs[2].id, evs[3].id]);
+  assert.deepEqual(C.seriesTargets(cal, evs[1], 'all'), evs.map((e) => e.id));
+  assert.deepEqual(C.seriesTargets(cal, other, 'all'), [other.id]);
+  s.entries.push({ id: 'e1', date: '2026-04-20', kind: 'expense', memo: '', lines: [], eventId: evs[2].id });
+  C.removeEvents(s, C.seriesTargets(cal, evs[1], 'after'));
+  assert.deepEqual(cal.events.map((e) => e.date), ['2026-04-06', '2026-04-13']);
+  assert.equal('eventId' in s.entries[0], false);
+});
+
+test('前の版で作った予定に、繰り返しのまとまりを付ける', () => {
+  const s = L.defaultState();
+  C.ensureCalendar(s);
+  const cal = s.calendar;
+  const mk = (title, date, createdAt, extra = {}) => {
+    const ev = C.newEvent({ title, date, ...extra });
+    ev.createdAt = createdAt;
+    cal.events.push(ev);
+    return ev;
+  };
+  // 繰り返しで作った予定（同じ予定名・種類で、作った時刻が1秒以内に続く）
+  const rep = ['2026-04-06', '2026-04-13', '2026-04-20'].map((d, i) => mk('17-22 バイト', d, 1000 + i));
+  // 同じ予定名でも、別のときに1件ずつ作った予定
+  const later = mk('17-22 バイト', '2026-05-04', 90000);
+  const alone = mk('面接', '2026-04-08', 1001);
+  // 家計簿から作った予定と、TimeTreeの繰り返し・繰り返しでない予定
+  const ledger = [mk('のみ', '2026-04-01', 5000, { src: 'ledger' }), mk('のみ', '2026-04-02', 5001, { src: 'ledger' })];
+  const tt = ['2026-01-05', '2026-01-12'].map((d) => mk('バイト', d, 7000, { src: 'timetree', importUid: `rep-1#${d}` }));
+  const tt1 = mk('合宿', '2026-02-01', 7000, { src: 'timetree', importUid: 'allday-1' });
+  C.ensureCalendar(s);
+  assert.ok(rep[0].series);
+  assert.ok(rep.every((e) => e.series === rep[0].series));
+  for (const e of [later, alone, ...ledger, tt1]) assert.equal(e.series, undefined, e.title);
+  assert.equal(tt[0].series, 'tt:rep-1');
+  assert.equal(tt[1].series, 'tt:rep-1');
+  // もう一度読み込んでも変わらない
+  const before = cal.events.map((e) => e.series);
+  C.ensureCalendar(s);
+  assert.deepEqual(cal.events.map((e) => e.series), before);
+});

@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.11.0';
+const APP_VERSION = '1.12.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -1386,16 +1386,20 @@ function eventSums() {
   return m;
 }
 
-// 予定の1行（週表示・日の詳細・検索で使う）
+// 予定の1行（週表示・日の詳細・検索で使う）。
+// 左の線：一日の予定は種類の色で塗り、一日の一部の予定（開始時刻がある）は薄い色に枠
 function eventRow(ev, sums, { back = '', withDate = false } = {}) {
   const cat = catOf(ev);
   const s = sums.get(ev.id);
+  const timed = C.isTimed(ev);
   const period = C.isMultiDay(ev) ? `${md(ev.date)}〜${md(ev.end)}` : '';
   const when = withDate ? `${L.yearOf(ev.date)}年${dateLabel(ev.date)}` : '';
-  const sub = [when, cat.name, period, (ev.memo || '').split('\n')[0]].filter(Boolean).join('　');
+  // 時刻：TimeTreeから取り込んだ時刻はここに出す（予定名の先頭の時間は、予定名の中で太字になる）
+  const clock = ev.time ? C.timeLabel(ev.time) : !timed && !period ? '終日' : '';
+  const sub = [when, clock, cat.name, period, (ev.memo || '').split('\n')[0]].filter(Boolean).join('　');
   const amt = s && (s.expense || s.income) ? `<span class="entry-amt ${s.expense ? '' : 'in'}">${s.expense ? '−' + yen(s.expense) : '+' + yen(s.income)}</span>` : '';
   return `<li><button type="button" class="entry cev" data-act="cal-edit" data-id="${ev.id}" data-back="${back}">
-    <span class="cev-bar" style="background:${catColor(cat)}"></span>
+    <span class="cev-bar${timed ? ' part' : ''}" style="--c:${catColor(cat)}"></span>
     <span class="entry-main"><span class="entry-title">${titleHtml(ev.title)}</span><span class="entry-sub">${esc(sub)}</span></span>${amt}</button></li>`;
 }
 
@@ -1497,7 +1501,10 @@ function monthBlock(ym) {
         while (e + 1 < x.col + x.span && shown(x, e + 1)) e++;
         const cat = catOf(x.ev);
         const cont = C.addDays(ws, c) > x.ev.date; // 前の日から続いている
-        html += `<span class="mbar${cont ? ' cont' : ''}" style="grid-column:${c + 1} / span ${e - c + 1};grid-row:${x.lane + 2};background:${catColor(cat)};color:${catInk(cat)}">${titleHtml(x.ev.title)}</span>`;
+        // 一日の予定は種類の色で塗って白い文字、一日の一部の予定（開始時刻がある）は薄い色に種類の色の文字
+        const part = C.isTimed(x.ev);
+        const look = part ? `--c:${catColor(cat)}` : `background:${catColor(cat)};color:${catInk(cat)}`;
+        html += `<span class="mbar${cont ? ' cont' : ''}${part ? ' part' : ''}" style="grid-column:${c + 1} / span ${e - c + 1};grid-row:${x.lane + 2};${look}">${titleHtml(x.ev.title)}</span>`;
         c = e + 1;
       }
     }
@@ -1635,12 +1642,18 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
     linked = `<h3 class="day day-sum"><span>つながっている家計簿の記録</span>${parts ? `<span>${parts}</span>` : ''}</h3>
       ${list.length ? `<ul class="entries">${list.map((x) => entryRow(x).replace('<span class="entry-sub">', `<span class="entry-sub">${md(x.date)}　`)).join('')}</ul>` : '<p class="hint">ありません。入力画面の「予定」でこの予定を選ぶと、ここに出ます。</p>'}`;
   }
-  const src = ev?.src === 'timetree' ? '<p class="hint">TimeTreeから取り込んだ予定です。</p>' : '';
+  const src = ev?.src === 'timetree' ? `<p class="hint">TimeTreeから取り込んだ予定です（${ev.time ? `時刻 ${C.timeLabel(ev.time)}` : '終日'}）。</p>` : '';
+  let rep = '';
+  if (!isNew) {
+    const list = C.seriesOf(cal, ev);
+    const after = list.filter((x) => x.date >= ev.date).length;
+    if (list.length > 1) rep = `<p class="hint">繰り返しの予定です（全${list.length}件のうち、この日以降${after}件）。削除するときに、この予定だけ・この日以降・すべてを選べます。</p>`;
+  }
   openSheet(`
     <h2>${isNew ? '予定の追加' : '予定の編集'}</h2>
     <form id="ev-form">
       <label class="field"><span class="field-label">予定名</span><input name="title" value="${esc(e.title)}" autocomplete="off" placeholder="例：13-面接　1930-22 飲み会"></label>
-      <p class="hint">先頭に「13-」「1930-22」のように時間を書くと、太字で表示し、その日の予定の中で時刻の順に入ります。</p>
+      <p class="hint">先頭に「13-」「1930-22」のように時間を書くと、一日の一部の予定（薄い色の帯）になり、その日の中で時刻の順に入ります。時間がなければ一日の予定（色で塗った帯）です。</p>
       <input type="hidden" name="cat" value="${e.cat}">
       <span class="field-label">種類</span>
       <div class="chips" id="ev-cats">${cats.map((c) => `<button type="button" class="chip${c.id === e.cat ? ' on' : ''}" data-cat="${c.id}"><span class="sw" style="background:${catColor(c)}"></span>${esc(c.name)}</button>`).join('')}<button type="button" class="chip chip-add" id="ev-cat-add">＋ 追加</button></div>
@@ -1655,7 +1668,7 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
       </div>
       <label class="field inline" id="ev-biz"${e.rep === 'bizday' ? '' : ' hidden'}><span>毎月の第<input name="bizN" type="number" inputmode="numeric" min="1" max="23" value="${esc(e.bizN || C.businessDayIndex(e.date) || 1)}" aria-label="第何営業日">営業日（土日・祝日を除いて数える）</span></label>
       <p class="hint" id="ev-rep-note"${e.rep ? '' : ' hidden'}></p>` : ''}
-      ${src}${linked}
+      ${rep}${src}${linked}
       <div class="sheet-actions">
         ${isNew ? '' : `<button type="button" class="danger" data-act="cal-delete" data-id="${ev.id}" data-back="${back}">削除</button>`}
         <button type="button" class="ghost" data-act="cal-back" data-back="${back}">閉じる</button>
@@ -1726,7 +1739,8 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
         const span = end ? C.diffDays(d, end) : 0;
         const dates = f.rep.value ? repDates() : [d];
         if (!dates.length) return;
-        for (const day of dates) C.addEvent(c, C.newEvent({ ...data, date: day, end: span ? C.addDays(day, span) : null }));
+        const series = dates.length > 1 ? L.uid() : null; // 繰り返しで作った予定のまとまり（削除で「この日以降」「すべて」を選べる）
+        for (const day of dates) C.addEvent(c, C.newEvent({ ...data, date: day, end: span ? C.addDays(day, span) : null, series }));
         if (dates.length > 1) msg = `予定を${dates.length}件作りました`;
       } else {
         const moved = ev.date !== d || C.lastDay(ev) !== (end && end > d ? end : d);
@@ -1752,6 +1766,27 @@ function repLabel(v, d) {
 function calBack(back) {
   if (back) daySheet(back);
   else closeSheet();
+}
+
+// 繰り返しの予定を削除する範囲を選ぶ
+function seriesDeleteSheet(ev, back) {
+  const cal = state.calendar;
+  const all = C.seriesOf(cal, ev);
+  const after = C.seriesTargets(cal, ev, 'after');
+  const ids = new Set(all.map((x) => x.id));
+  const linked = state.entries.some((e) => ids.has(e.eventId));
+  const btn = (scope, label) => `<button type="button" class="danger" data-act="cal-delete-series" data-scope="${scope}" data-id="${ev.id}" data-back="${back}">${label}</button>`;
+  openSheet(`
+    <h2>繰り返しの予定の削除</h2>
+    <p>「${titleHtml(ev.title)}」は繰り返しの予定です（全${all.length}件）。${md(ev.date)}の予定を開いています。</p>
+    <div class="del-scope">
+      ${btn('one', 'この予定だけ')}
+      ${after.length > 1 && after.length < all.length ? btn('after', `この日以降（${after.length}件）`) : ''}
+      ${btn('all', `すべて（${all.length}件）`)}
+    </div>
+    ${linked ? '<p class="hint">つながっている家計簿の記録は消えず、つながりだけ外れます。</p>' : ''}
+    <div class="sheet-actions"><button type="button" class="ghost" data-act="cal-edit" data-id="${ev.id}" data-back="${back}">戻る</button></div>`);
+  $('#sheet-body').scrollTop = 0;
 }
 
 // 種類の管理・科目との対応・TimeTreeの取り込み
@@ -2027,11 +2062,21 @@ const CAL_ACTIONS = {
   'cal-delete': async (el) => {
     const ev = state.calendar.events.find((x) => x.id === el.dataset.id);
     if (!ev) return;
+    if (C.seriesOf(state.calendar, ev).length > 1) return seriesDeleteSheet(ev, el.dataset.back || '');
     const n = C.linkedEntries(state, ev.id).length;
     if (!confirm(`予定「${ev.title}」を削除しますか？${n ? `つながっている家計簿の記録（${n}件）は消えず、つながりだけ外れます。` : ''}`)) return;
     await commit((s) => C.removeEvents(s, [ev.id]));
     calBack(el.dataset.back);
     toast('予定を削除しました');
+  },
+  // 繰り返しの予定の削除（この予定だけ・この日以降・すべて）。選ぶ画面が確認を兼ねる
+  'cal-delete-series': async (el) => {
+    const ev = state.calendar.events.find((x) => x.id === el.dataset.id);
+    if (!ev) return;
+    const ids = C.seriesTargets(state.calendar, ev, el.dataset.scope);
+    await commit((s) => C.removeEvents(s, ids));
+    calBack(el.dataset.back);
+    toast(ids.length > 1 ? `予定を${ids.length}件削除しました` : '予定を削除しました');
   },
   'cal-goto': (el) => {
     const d = el.dataset.date;
@@ -2139,10 +2184,12 @@ function demoEvents(s, rnd) {
   const end = C.addDays(today(), 30);
   for (let d = C.startOfWeek(`${L.addMonths(L.monthOf(today()), -2)}-01`); d <= end; d = C.addDays(d, 1)) {
     const w = C.weekday(d);
-    if (w === 1 || w === 4) add('17-22 バイト', d, 'c_job');
-    if (w === 2) add('1-2限 統計', d, 'c_univ');
-    if (w === 3) add('1030-12 ゼミ', d, 'c_univ');
+    if (w === 1 || w === 4) add('17-22 バイト', d, 'c_job', { series: 'demo-job' });
+    if (w === 2) add('1-2限 統計', d, 'c_univ', { series: 'demo-stat' });
+    if (w === 3) add('1030-12 ゼミ', d, 'c_univ', { series: 'demo-seminar' });
   }
+  add('献血', C.addDays(today(), 4), 'c_play');
+  add('大学', C.addDays(today(), 5), 'c_univ', { src: 'timetree', time: { start: 9 * 60, end: 18 * 60 } }); // TimeTreeから取り込んだ時刻つきの予定
   // 山と遊びの支出に、予定をつないでおく
   const titles = { mountain: ['山（丹沢）', '高尾山', '山（奥多摩）'], play: ['8-映画', '1930- 飲み会', 'カラオケ'] };
   for (const e of s.entries) {
