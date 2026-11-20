@@ -72,8 +72,17 @@ export const timeLabel = (t) => (t ? `${clockLabel(t.start)}〜${t.end != null ?
 // ---------------------------------------------------------------- 予定
 // 予定の開始時刻（0時からの分）。TimeTreeから取り込んだ時刻（ev.time）か、予定名の先頭の時間。なければ null
 export const startOf = (ev) => ev.time?.start ?? parseTime(ev.title)?.start ?? null;
-// 一日の一部の予定か（開始時刻がある）。そうでなければ一日の予定
-export const isTimed = (ev) => startOf(ev) != null;
+// 一日の一部の予定か。予定の追加・編集画面で選んだもの（ev.allDay）があればそれ、
+// なければ開始時刻があるかで決める。そうでなければ一日の予定
+export const autoTimed = (ev) => startOf(ev) != null;
+export const isTimed = (ev) => (typeof ev.allDay === 'boolean' ? !ev.allDay : autoTimed(ev));
+
+// 一日の一部の予定か（part）を選んだ結果を予定に記録する。開始時刻から決まるものと同じなら記録しない
+// （あとで予定名の時間を変えたときに、それに合わせて変わるように）
+export function setTimed(ev, part) {
+  if (part === autoTimed(ev)) delete ev.allDay;
+  else ev.allDay = !part;
+}
 export const isMultiDay = (ev) => !!ev.end && ev.end > ev.date;
 export const lastDay = (ev) => (isMultiDay(ev) ? ev.end : ev.date);
 export const occursOn = (ev, d) => ev.date <= d && d <= lastDay(ev);
@@ -304,6 +313,7 @@ export function ensureCalendar(state) {
   for (const e of c.events) {
     if (!catIds.has(e.cat)) e.cat = UNCAT;
     if (typeof e.order !== 'number') e.order = 0;
+    if ('allDay' in e && typeof e.allDay !== 'boolean') delete e.allDay;
   }
   inferSeries(c);
   const ids = new Set(c.events.map((e) => e.id));

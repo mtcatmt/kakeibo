@@ -365,3 +365,29 @@ test('前の版で作った予定に、繰り返しのまとまりを付ける',
   C.ensureCalendar(s);
   assert.deepEqual(cal.events.map((e) => e.series), before);
 });
+
+test('一日の予定か一日の一部の予定かを選ぶ：開始時刻から決まるものと違うときだけ記録する', () => {
+  const ev = C.newEvent({ title: 'バイト', date: '2026-04-01' });
+  assert.equal(C.isTimed(ev), false);
+  C.setTimed(ev, true); // 時間のない予定名でも一日の一部に
+  assert.equal(ev.allDay, false);
+  assert.equal(C.isTimed(ev), true);
+  C.setTimed(ev, false); // 戻すと記録を消す
+  assert.equal('allDay' in ev, false);
+  const t = C.newEvent({ title: '13-面接', date: '2026-04-01' });
+  C.setTimed(t, false); // 時間のある予定名でも一日に
+  assert.equal(t.allDay, true);
+  assert.equal(C.isTimed(t), false);
+  assert.equal(C.startOf(t), T(13)); // 並び順には時刻を使う
+  const imp = C.newEvent({ title: 'だいがく', date: '2026-04-01', time: { start: T(9), end: T(18) } });
+  C.setTimed(imp, true);
+  assert.equal('allDay' in imp, false);
+  // 読み込むとき、真偽値でない allDay は消す
+  const s = L.defaultState();
+  C.ensureCalendar(s);
+  const bad = C.newEvent({ title: 'x', date: '2026-04-01' });
+  bad.allDay = 'yes';
+  s.calendar.events.push(bad);
+  C.ensureCalendar(s);
+  assert.equal('allDay' in bad, false);
+});

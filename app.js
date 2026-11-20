@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.12.0';
+const APP_VERSION = '1.13.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -1395,7 +1395,7 @@ function eventRow(ev, sums, { back = '', withDate = false } = {}) {
   const period = C.isMultiDay(ev) ? `${md(ev.date)}〜${md(ev.end)}` : '';
   const when = withDate ? `${L.yearOf(ev.date)}年${dateLabel(ev.date)}` : '';
   // 時刻：TimeTreeから取り込んだ時刻はここに出す（予定名の先頭の時間は、予定名の中で太字になる）
-  const clock = ev.time ? C.timeLabel(ev.time) : !timed && !period ? '終日' : '';
+  const clock = !timed ? (period ? '' : '終日') : ev.time ? C.timeLabel(ev.time) : '';
   const sub = [when, clock, cat.name, period, (ev.memo || '').split('\n')[0]].filter(Boolean).join('　');
   const amt = s && (s.expense || s.income) ? `<span class="entry-amt ${s.expense ? '' : 'in'}">${s.expense ? '−' + yen(s.expense) : '+' + yen(s.income)}</span>` : '';
   return `<li><button type="button" class="entry cev" data-act="cal-edit" data-id="${ev.id}" data-back="${back}">
@@ -1634,6 +1634,10 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
   const cal = state.calendar;
   const e = { ...(ev || { title: '', date, end: null, cat: C.UNCAT, memo: '' }), ...(draft || {}) };
   const cats = C.sortedCats(cal);
+  // 一日の予定か、一日の一部の予定か。自分で選んでいなければ（spanTouched）、予定名の時間に合わせて変える
+  const autoPart = (title) => C.autoTimed({ ...e, title });
+  const part = draft && 'part' in draft ? draft.part : C.isTimed(e);
+  let spanTouched = draft && 'spanTouched' in draft ? draft.spanTouched : typeof e.allDay === 'boolean';
   let linked = '';
   if (!isNew) {
     const list = C.linkedEntries(state, ev.id);
@@ -1653,7 +1657,12 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
     <h2>${isNew ? '予定の追加' : '予定の編集'}</h2>
     <form id="ev-form">
       <label class="field"><span class="field-label">予定名</span><input name="title" value="${esc(e.title)}" autocomplete="off" placeholder="例：13-面接　1930-22 飲み会"></label>
-      <p class="hint">先頭に「13-」「1930-22」のように時間を書くと、一日の一部の予定（薄い色の帯）になり、その日の中で時刻の順に入ります。時間がなければ一日の予定（色で塗った帯）です。</p>
+      <input type="hidden" name="part" value="${part ? '1' : ''}">
+      <div class="seg seg-sm ev-span" id="ev-span" role="radiogroup" aria-label="一日の予定か、一日の一部の予定か">
+        <button type="button" role="radio" data-part="" aria-checked="${!part}" class="${part ? '' : 'on'}">一日の予定</button>
+        <button type="button" role="radio" data-part="1" aria-checked="${part}" class="${part ? 'on' : ''}">一日の一部の予定</button>
+      </div>
+      <p class="hint" id="ev-span-note"></p>
       <input type="hidden" name="cat" value="${e.cat}">
       <span class="field-label">種類</span>
       <div class="chips" id="ev-cats">${cats.map((c) => `<button type="button" class="chip${c.id === e.cat ? ' on' : ''}" data-cat="${c.id}"><span class="sw" style="background:${catColor(c)}"></span>${esc(c.name)}</button>`).join('')}<button type="button" class="chip chip-add" id="ev-cat-add">＋ 追加</button></div>
@@ -1680,7 +1689,7 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
   const f = form.elements;
   // 種類の「＋ 追加」：入力途中の値をとっておき、追加したらその種類を選んだ状態で開き直す
   $('#ev-cat-add').addEventListener('click', () => {
-    const vals = { title: f.title.value, cat: f.cat.value, date: f.date.value, end: f.end.value || null, memo: f.memo.value };
+    const vals = { title: f.title.value, cat: f.cat.value, date: f.date.value, end: f.end.value || null, memo: f.memo.value, part: !!f.part.value, spanTouched };
     if (isNew) Object.assign(vals, { rep: f.rep.value, count: f.count.value, bizN: f.bizN.value });
     catAddSheet({
       onDone: (c) => eventForm(ev, { back, draft: { ...vals, cat: c.id } }),
@@ -1693,6 +1702,26 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
     f.cat.value = b.dataset.cat;
     form.querySelectorAll('#ev-cats .chip').forEach((c) => c.classList.toggle('on', c === b));
   });
+  // 一日の予定・一日の一部の予定
+  const setSpan = (p) => {
+    f.part.value = p ? '1' : '';
+    form.querySelectorAll('#ev-span button').forEach((b) => {
+      const on = !!b.dataset.part === p;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-checked', String(on));
+    });
+    $('#ev-span-note').textContent =
+      (p ? 'カレンダーでは種類の色を薄くした帯で出します。' : 'カレンダーでは種類の色で塗った帯で出します。') +
+      (spanTouched ? '' : '予定名の先頭に「13-」「1930-22」のように時間を書くと「一日の一部の予定」に変わり、その日の中で時刻の順に入ります。');
+  };
+  $('#ev-span').addEventListener('click', (x) => {
+    const b = x.target.closest('[data-part]');
+    if (!b) return;
+    spanTouched = true;
+    setSpan(!!b.dataset.part);
+  });
+  f.title.addEventListener('input', () => setSpan(spanTouched ? !!f.part.value : autoPart(f.title.value.trim())));
+  setSpan(part);
   // 繰り返し：選んだ日付に合わせて選択肢の名前を変え、作られる日付の最初の数回を出す
   const repDates = () => C.repeatDates(f.date.value, f.rep.value, Number(f.count.value) || 1, Number(f.bizN.value));
   let bizTouched = !!e.bizN; // 第何営業日を自分で変えていなければ、日付に合わせる
@@ -1732,6 +1761,7 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
     if (end && end < d) return toast('終了日が日付より前になっています');
     if (isNew && f.rep.value && !repDates().length) return toast('繰り返しの条件に当たる日がありません');
     const data = { title, cat: f.cat.value, memo: f.memo.value.trim() };
+    const part = !!f.part.value;
     let msg = '保存しました';
     await commit((s) => {
       const c = s.calendar;
@@ -1740,11 +1770,16 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
         const dates = f.rep.value ? repDates() : [d];
         if (!dates.length) return;
         const series = dates.length > 1 ? L.uid() : null; // 繰り返しで作った予定のまとまり（削除で「この日以降」「すべて」を選べる）
-        for (const day of dates) C.addEvent(c, C.newEvent({ ...data, date: day, end: span ? C.addDays(day, span) : null, series }));
+        for (const day of dates) {
+          const x = C.newEvent({ ...data, date: day, end: span ? C.addDays(day, span) : null, series });
+          C.setTimed(x, part);
+          C.addEvent(c, x);
+        }
         if (dates.length > 1) msg = `予定を${dates.length}件作りました`;
       } else {
         const moved = ev.date !== d || C.lastDay(ev) !== (end && end > d ? end : d);
         Object.assign(ev, data, { date: d, end: end && end > d ? end : null });
+        C.setTimed(ev, part);
         if (moved) C.placeEvent(c, ev); // 日付を変えたら、新しい日の並び順に入れる
       }
     });
