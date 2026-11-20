@@ -269,3 +269,17 @@ test('.ics の取り込み：重複させない・種類の決め方・ファイ
   assert.equal(cal.imports.length, 1);
   assert.equal('eventId' in s.entries[0], false);
 });
+
+test('毎月の第n営業日（土日・祝日を除く）', () => {
+  assert.equal(C.nthBusinessDay('2027-01', 1), '2027-01-04'); // 1/1 祝日・1/2 土・1/3 日
+  assert.equal(C.nthBusinessDay('2026-05', 2), '2026-05-07'); // 5/4〜5/6 は祝日・振替休日
+  assert.equal(C.nthBusinessDay('2026-11', 3), '2026-11-05'); // 11/3 文化の日
+  assert.equal(C.nthBusinessDay('2026-11', 25), null);
+  assert.equal(C.businessDayIndex('2026-11-05'), 3);
+  assert.equal(C.businessDayIndex('2026-11-03'), null);
+  // 日付より前の回は作らない：11/20 から「第3営業日」→ 12月から
+  assert.deepEqual(C.repeatDates('2026-11-20', 'bizday', 3, 3), ['2026-12-03', '2027-01-06', '2027-02-03']);
+  assert.deepEqual(C.repeatDates('2026-11-05', 'bizday', 2, 3), ['2026-11-05', '2026-12-03']);
+  // 第21営業日は、営業日が20日しかない月を飛ばす
+  assert.ok(C.repeatDates('2027-01-01', 'bizday', 3, 21).every((d) => C.businessDayIndex(d) === 21));
+});

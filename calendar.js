@@ -120,11 +120,20 @@ export function removeEvents(state, ids) {
   for (const e of state.entries) if (set.has(e.eventId)) delete e.eventId;
 }
 
-// 繰り返しの日付。freq：'weekly' | 'monthly'。月の日数より大きい日は、その月の末日にする
-export function repeatDates(date, freq, count) {
+// 繰り返しの日付。freq：'weekly'（毎週）| 'monthly'（毎月その日。月の日数より大きい日は末日）
+// | 'bizday'（毎月の第n営業日。土日・祝日を除いて数える。date より前と、第n営業日がない月は作らない）
+export function repeatDates(date, freq, count, n = 1) {
   count = Math.max(1, Math.min(MAX_REPEAT, Math.floor(count) || 1));
   const out = [];
   const [y, m, d] = date.split('-').map(Number);
+  if (freq === 'bizday') {
+    for (let i = 0; out.length < count && i < count + 24; i++) {
+      const t = y * 12 + (m - 1) + i;
+      const x = nthBusinessDay(`${Math.floor(t / 12)}-${pad2((t % 12) + 1)}`, n);
+      if (x && x >= date) out.push(x);
+    }
+    return out;
+  }
   for (let i = 0; i < count; i++) {
     if (freq === 'weekly') out.push(addDays(date, 7 * i));
     else if (freq === 'monthly') {
@@ -136,6 +145,26 @@ export function repeatDates(date, freq, count) {
     } else out.push(date);
   }
   return out;
+}
+
+// 営業日：土日・祝日（振替休日・国民の休日を含む）でない日
+export const isBusinessDay = (d) => weekday(d) !== 0 && weekday(d) !== 6 && !holidayName(d);
+
+// その月（'YYYY-MM'）の第n営業日。なければ null
+export function nthBusinessDay(ym, n) {
+  n = Math.floor(n);
+  if (!(n >= 1)) return null;
+  let k = 0;
+  for (let d = `${ym}-01`; d.slice(0, 7) === ym; d = addDays(d, 1)) if (isBusinessDay(d) && ++k === n) return d;
+  return null;
+}
+
+// その日がその月の第何営業日か。営業日でなければ null
+export function businessDayIndex(d) {
+  if (!isBusinessDay(d)) return null;
+  let k = 0;
+  for (let x = `${d.slice(0, 7)}-01`; x <= d; x = addDays(x, 1)) if (isBusinessDay(x)) k++;
+  return k;
 }
 
 // 予定名とメモで探す。結果は新しい順

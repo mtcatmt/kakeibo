@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.10.0';
+const APP_VERSION = '1.11.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -1650,9 +1650,11 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
       </div>
       <label class="field"><span class="field-label">メモ</span><textarea name="memo" rows="3" placeholder="任意">${esc(e.memo)}</textarea></label>
       ${isNew ? `<div class="row2">
-        <label class="field"><span class="field-label">繰り返し</span><select name="rep">${[['', 'しない'], ['weekly', '毎週'], ['monthly', '毎月']].map(([v, lb]) => `<option value="${v}"${v === (e.rep || '') ? ' selected' : ''}>${lb}</option>`).join('')}</select></label>
-        <label class="field" id="ev-count"${e.rep ? '' : ' hidden'}><span class="field-label">回数（この日を含む）</span><input name="count" type="number" inputmode="numeric" min="2" max="${C.MAX_REPEAT}" value="${esc(e.count || 4)}"></label>
-      </div><p class="hint" id="ev-rep-note"${e.rep ? '' : ' hidden'}>作ったあとは、1件ずつの予定になります。</p>` : ''}
+        <label class="field"><span class="field-label">繰り返し</span><select name="rep">${['', 'weekly', 'monthly', 'bizday'].map((v) => `<option value="${v}"${v === (e.rep || '') ? ' selected' : ''}>${repLabel(v, e.date)}</option>`).join('')}</select></label>
+        <label class="field" id="ev-count"${e.rep ? '' : ' hidden'}><span class="field-label">回数</span><input name="count" type="number" inputmode="numeric" min="1" max="${C.MAX_REPEAT}" value="${esc(e.count || 4)}"></label>
+      </div>
+      <label class="field inline" id="ev-biz"${e.rep === 'bizday' ? '' : ' hidden'}><span>毎月の第<input name="bizN" type="number" inputmode="numeric" min="1" max="23" value="${esc(e.bizN || C.businessDayIndex(e.date) || 1)}" aria-label="第何営業日">営業日（土日・祝日を除いて数える）</span></label>
+      <p class="hint" id="ev-rep-note"${e.rep ? '' : ' hidden'}></p>` : ''}
       ${src}${linked}
       <div class="sheet-actions">
         ${isNew ? '' : `<button type="button" class="danger" data-act="cal-delete" data-id="${ev.id}" data-back="${back}">削除</button>`}
@@ -1666,7 +1668,7 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
   // 種類の「＋ 追加」：入力途中の値をとっておき、追加したらその種類を選んだ状態で開き直す
   $('#ev-cat-add').addEventListener('click', () => {
     const vals = { title: f.title.value, cat: f.cat.value, date: f.date.value, end: f.end.value || null, memo: f.memo.value };
-    if (isNew) Object.assign(vals, { rep: f.rep.value, count: f.count.value });
+    if (isNew) Object.assign(vals, { rep: f.rep.value, count: f.count.value, bizN: f.bizN.value });
     catAddSheet({
       onDone: (c) => eventForm(ev, { back, draft: { ...vals, cat: c.id } }),
       onCancel: () => eventForm(ev, { back, draft: vals }),
@@ -1678,10 +1680,35 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
     f.cat.value = b.dataset.cat;
     form.querySelectorAll('#ev-cats .chip').forEach((c) => c.classList.toggle('on', c === b));
   });
-  f.rep?.addEventListener('change', () => {
-    $('#ev-count').hidden = !f.rep.value;
-    $('#ev-rep-note').hidden = !f.rep.value;
+  // 繰り返し：選んだ日付に合わせて選択肢の名前を変え、作られる日付の最初の数回を出す
+  const repDates = () => C.repeatDates(f.date.value, f.rep.value, Number(f.count.value) || 1, Number(f.bizN.value));
+  let bizTouched = !!e.bizN; // 第何営業日を自分で変えていなければ、日付に合わせる
+  const updateRep = () => {
+    if (!f.rep) return;
+    const v = f.rep.value;
+    if (C.isDate(f.date.value)) {
+      [...f.rep.options].forEach((o) => (o.textContent = repLabel(o.value, f.date.value)));
+      if (!bizTouched) f.bizN.value = C.businessDayIndex(f.date.value) || 1;
+    }
+    $('#ev-count').hidden = !v;
+    $('#ev-biz').hidden = v !== 'bizday';
+    const note = $('#ev-rep-note');
+    note.hidden = !v;
+    if (!v || !C.isDate(f.date.value)) return;
+    const ds = repDates();
+    const shown = ds.slice(0, 3).map((x) => `${L.yearOf(x) !== L.yearOf(f.date.value) ? L.yearOf(x) + '年' : ''}${dateLabel(x)}`).join('、');
+    note.textContent = ds.length
+      ? `${shown}${ds.length > 3 ? ` …（全${ds.length}件）` : ''}。${v === 'bizday' ? '日付より前の回は作りません。' : ''}作ったあとは、1件ずつの予定になります。`
+      : 'この条件に当たる日がありません。';
+  };
+  f.rep?.addEventListener('change', updateRep);
+  f.date.addEventListener('input', updateRep);
+  f.count?.addEventListener('input', updateRep);
+  f.bizN?.addEventListener('input', () => {
+    bizTouched = true;
+    updateRep();
   });
+  updateRep();
   form.addEventListener('submit', async (x) => {
     x.preventDefault();
     const title = f.title.value.trim();
@@ -1690,13 +1717,15 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
     if (!title) return toast('予定名を入力してください');
     if (!C.isDate(d)) return toast('日付を入力してください');
     if (end && end < d) return toast('終了日が日付より前になっています');
+    if (isNew && f.rep.value && !repDates().length) return toast('繰り返しの条件に当たる日がありません');
     const data = { title, cat: f.cat.value, memo: f.memo.value.trim() };
     let msg = '保存しました';
     await commit((s) => {
       const c = s.calendar;
       if (isNew) {
         const span = end ? C.diffDays(d, end) : 0;
-        const dates = f.rep.value ? C.repeatDates(d, f.rep.value, Number(f.count.value) || 1) : [d];
+        const dates = f.rep.value ? repDates() : [d];
+        if (!dates.length) return;
         for (const day of dates) C.addEvent(c, C.newEvent({ ...data, date: day, end: span ? C.addDays(day, span) : null }));
         if (dates.length > 1) msg = `予定を${dates.length}件作りました`;
       } else {
@@ -1709,6 +1738,15 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
     toast(msg);
   });
   if (isNew) f.title.focus();
+}
+
+// 繰り返しの選択肢の名前（選んだ日付に合わせる）
+function repLabel(v, d) {
+  if (!v) return 'しない';
+  if (!C.isDate(d)) return { weekly: '毎週', monthly: '毎月', bizday: '毎月の営業日' }[v];
+  if (v === 'weekly') return `毎週${'日月火水木金土'[C.weekday(d)]}曜日`;
+  if (v === 'monthly') return `毎月${Number(d.slice(8))}日`;
+  return '毎月の営業日';
 }
 
 function calBack(back) {
