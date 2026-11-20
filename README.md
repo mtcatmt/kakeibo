@@ -14,6 +14,8 @@ iPhoneのホーム画面に追加して使う、複式簿記の家計簿。デ�
 | `sw.js` | オフラインで開くためのService Worker |
 | `manifest.webmanifest` / `icons/` | ホーム画面に追加したときの名前とアイコン |
 | `tests/` | `ledger.js`・`calendar.js` のテスト（`node --test tests/*.test.mjs`） |
+| `docs/calendar-requirements.md` | カレンダーの要件定義と、作りながら決まったこと |
+| `CLAUDE.md` | 開発するときの決まり（版の上げ方・テスト・確認の仕方） |
 
 ## GitHub Pagesに置く手順
 
