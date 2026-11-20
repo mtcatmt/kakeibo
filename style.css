@@ -52,9 +52,14 @@
   }
 }
 
-* { box-sizing: border-box; }
+/* 拡大しない：touch-action を縦横のスクロールだけにする（ダブルタップ・2本指の拡大をしない）。
+   iPhoneのSafariは、スクロールする欄（月表示・シート）の中ではその欄から内側の指定しか見ないので、すべての要素に付ける。
+   index.html の viewport（user-scalable=no）と、app.js の gesture イベントでも止めている */
+* { box-sizing: border-box; touch-action: pan-x pan-y; }
 [hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
+/* 画面を左右に動かさない（clip はスクロールする欄を作らないので、sticky の見出しはそのまま動く） */
+html, body { overflow-x: clip; }
 body {
   margin: 0;
   background: var(--bg);
@@ -94,7 +99,7 @@ p { margin: 6px 0; }
 /* 入力 */
 .amount {
   display: flex; align-items: center; gap: 6px; width: 100%; border: 0; border-bottom: 1px solid var(--line); background: none;
-  color: var(--text); padding: 4px 0; margin-bottom: 14px; text-align: left; cursor: pointer; touch-action: manipulation;
+  color: var(--text); padding: 4px 0; margin-bottom: 14px; text-align: left; cursor: pointer;
 }
 .amount-yen { font-size: 28px; color: var(--muted); }
 .amount-val { flex: 1; min-width: 0; font-size: 36px; font-weight: 600; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
@@ -139,7 +144,7 @@ p { margin: 6px 0; }
 .calc-keys { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .calc-keys button {
   height: 52px; border: 0; border-radius: 12px; background: var(--card-2); color: var(--text); font-size: 22px;
-  font-variant-numeric: tabular-nums; touch-action: manipulation;
+  font-variant-numeric: tabular-nums;
 }
 .calc-keys button:active { background: var(--line); }
 .calc-keys .op { color: var(--accent); }
@@ -158,7 +163,11 @@ p { margin: 6px 0; }
   width: 100%; border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 9px 10px; font-size: 16px;
   min-height: 42px;
 }
-.field.inline select { width: auto; display: inline-block; margin: 0 4px; padding: 4px 8px; min-height: 0; }
+/* iPhoneのSafariの日付の入力欄は、中身に合わせた最小の幅を持ち、2つ横に並べると欄からはみ出す（シートが左右に動く）。
+   見た目の指定を外して、幅を欄に合わせる。日付は左に寄せる */
+.field input[type="date"] { -webkit-appearance: none; appearance: none; display: block; min-width: 0; max-width: 100%; text-align: left; }
+.field input[type="date"]::-webkit-date-and-time-value { text-align: left; }
+.field.inline select { width: auto; display: inline-block; margin: 0 4px; padding: 4px 8px; min-height: 0; font-size: 16px; } /* 16px より小さいと、iPhoneはタップしたときに拡大する */
 .field.inline { margin-top: 12px; font-size: 14px; color: var(--text-2); }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .row2 > .field[hidden] { display: none; }
@@ -271,7 +280,7 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
 .acc-btns .link { font-size: 14px; }
 .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); gap: 8px; margin: 4px 0 8px; }
 .swatch {
-  aspect-ratio: 1; width: 100%; border: 0; border-radius: 10px; cursor: pointer; touch-action: manipulation;
+  aspect-ratio: 1; width: 100%; border: 0; border-radius: 10px; cursor: pointer;
   box-shadow: inset 0 0 0 1px var(--ring);
 }
 .swatch.on { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--text); }
@@ -315,6 +324,7 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
 .sheet {
   border: 0; border-radius: 16px; padding: 18px 16px calc(env(safe-area-inset-bottom) + 16px);
   width: min(560px, calc(100vw - 16px)); max-height: 88vh; background: var(--card); color: var(--text);
+  overflow-x: hidden; /* 中身が幅からはみ出しても、シートを左右に動かさない */
 }
 .sheet::backdrop { background: rgba(0, 0, 0, 0.4); }
 .sheet .field { margin-bottom: 4px; }
@@ -338,7 +348,7 @@ body.locked { overflow: hidden; }
 .keypad > * { width: 72px; height: 72px; }
 .keypad button {
   border: 0; border-radius: 50%; background: var(--card); box-shadow: 0 0 0 1px var(--ring);
-  font-size: 28px; font-variant-numeric: tabular-nums; touch-action: manipulation;
+  font-size: 28px; font-variant-numeric: tabular-nums;
 }
 .keypad button:active { background: var(--line); }
 .keypad .key-text { background: none; box-shadow: none; font-size: 13px; color: var(--accent); padding: 0; }
@@ -378,7 +388,7 @@ body.cal-fixed { overscroll-behavior-y: none; }
 }
 .mday {
   grid-row: 1 / -1; border: 0; border-left: 1px solid var(--line); background: none; padding: 2px 0 0; display: flex;
-  justify-content: center; align-items: flex-start; cursor: pointer; touch-action: manipulation; color: var(--text);
+  justify-content: center; align-items: flex-start; cursor: pointer; color: var(--text);
 }
 .mday:first-child { border-left: 0; }
 .mday:active { background: var(--sel); }
@@ -421,7 +431,7 @@ body.cal-fixed { overscroll-behavior-y: none; }
 .sheet textarea {
   width: 100%; border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 9px 10px; font: inherit; font-size: 16px; color: var(--text); resize: vertical;
 }
-.acccat { border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 6px 8px; font-size: 15px; width: 100%; }
+.acccat { border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 6px 8px; font-size: 16px; width: 100%; }
 .add-rule { margin-top: 10px; grid-template-columns: 1fr 1fr; align-items: center; }
 .add-rule input, .add-rule select {
   width: 100%; border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 9px 10px; font-size: 16px; min-height: 42px;

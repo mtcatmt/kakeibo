@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.16.0';
+const APP_VERSION = '1.17.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -2583,6 +2583,10 @@ document.addEventListener('keydown', (ev) => {
   ev.preventDefault();
   padCtl.press(k);
 });
+
+// 拡大しない：iPhoneのSafariの2本指の拡大（gesture イベント）を止める。
+// Safariは viewport の user-scalable=no を無視することがあるので、ここでも止める（style.css の touch-action も同じ目的）
+for (const type of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(type, (ev) => ev.preventDefault(), { passive: false });
 
 // ほかのアプリから戻ったときのロックと、日付が変わってから再び開いたときの固定費の作成
 document.addEventListener('visibilitychange', async () => {
