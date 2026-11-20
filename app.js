@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.8.0';
+const APP_VERSION = '1.10.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -153,7 +153,7 @@ const MODES = [
 ];
 
 // 予定の欄の初期値（何も選んでいない）
-const NO_EVENT = { eventId: null, newEvent: '', newEventOpen: false };
+const NO_EVENT = { eventId: null, newEvent: '', newEventOpen: false, newEventCat: null }; // newEventCat：選んだ種類（null なら科目で決める）
 
 // 立替欄の初期値。割り勘の人数と、割り勘か金額の指定かは、前回の入力を使う
 function advDefaults() {
@@ -479,7 +479,7 @@ async function saveEntry() {
       const same = C.findSameEvent(state.calendar, d.date, title);
       if (same) evId = same.id;
       else {
-        newEv = C.newEvent({ title, date: d.date, cat: C.catForLines(state.calendar, r.lines, state.accounts), src: 'ledger' });
+        newEv = C.newEvent({ title, date: d.date, cat: newEventCat(r.lines), src: 'ledger' });
         evId = newEv.id;
       }
     } else if (d.eventId && state.calendar.events.some((x) => x.id === d.eventId && C.occursOn(x, d.date))) evId = d.eventId;
@@ -548,7 +548,7 @@ function startEdit(id) {
     let people = 0;
     for (let n = 2; n <= 30 && !people; n++) if (L.splitAdvance(total, n) === advLine.amount) people = n;
     ui.draft = {
-      date: e.date, memo: e.memo || '', eventId: e.eventId || null, newEvent: '', newEventOpen: false, amount: String(total), acc: ownLine.acc, from: cr[0].acc,
+      date: e.date, memo: e.memo || '', eventId: e.eventId || null, newEvent: '', newEventOpen: false, newEventCat: null, amount: String(total), acc: ownLine.acc, from: cr[0].acc,
       advOn: true, advMode: people ? 'split' : 'amount', people: people || 2, adv: String(advLine.amount), advAcc: advLine.acc,
     };
     closeSheet();
@@ -966,6 +966,22 @@ function viewSettings() {
       </div>
       <button type="button" class="ghost" data-act="acc-add">科目を追加</button>
       <p class="hint">仕訳で使っている科目は削除できません。使わなくなった科目は「非表示」にすると、入力画面に出なくなります。</p>
+    </section>
+
+    <section class="card">
+      <h2>予定の種類</h2>
+      <ul class="accs">${C.sortedCats(state.calendar)
+        .map(
+          (c) => `<li><span><span class="sw" style="background:${catColor(c)}"></span>${esc(c.name)}</span>
+          <span class="acc-btns">
+            <button type="button" class="link" data-act="cat-color" data-id="${c.id}" data-from="settings">色</button>
+            <button type="button" class="link" data-act="cat-rename" data-id="${c.id}" data-from="settings">名前</button>
+            ${c.id === C.UNCAT ? '' : `<button type="button" class="link danger-text" data-act="cat-delete" data-id="${c.id}" data-from="settings">削除</button>`}
+          </span></li>`,
+        )
+        .join('')}</ul>
+      <button type="button" class="ghost" data-act="cat-add" data-from="settings">種類を追加</button>
+      <p class="hint">カレンダーの予定の色に使います。削除した種類の予定は「未分類」になります。並べ替えと、費用の科目との対応は、カレンダーの「種類・取り込み」からできます。</p>
     </section>
 
     ${DEMO ? '' : `<section class="card">
@@ -1395,8 +1411,22 @@ function renderCalBody() {
   const el = $('#cal-body');
   if (el) {
     el.innerHTML = calBody();
-    bindCalendar();
+    bindCalendar(false);
   }
+}
+
+const MONTH_CHUNK = 6; // 端に近づいたときに足す月の数
+
+// 月表示で並べる月の範囲。見ている月が範囲の外なら、その前後6か月にする
+function monthRange() {
+  const c = ui.cal;
+  if (!c.range || c.month < c.range.from || c.month > c.range.to) {
+    c.range = { from: L.addMonths(c.month, -MONTH_CHUNK), to: L.addMonths(c.month, MONTH_CHUNK) };
+    c.scrollTop = null;
+  }
+  const out = [];
+  for (let m = c.range.from; m <= c.range.to; m = L.addMonths(m, 1)) out.push(m);
+  return out;
 }
 
 function calBody() {
@@ -1408,20 +1438,22 @@ function calBody() {
       <section class="card list">${list.length ? `<ul class="entries">${list.map((ev) => eventRow(ev, sums, { withDate: true })).join('')}</ul>` : '<p class="empty">見つかりませんでした</p>'}</section>`;
   }
   const month = c.view === 'month';
-  const label = month ? monthLabel(c.month) : weekLabel(c.week);
-  return `<div class="cal-bar">
-      <div class="seg seg-sm">
-        <button type="button" class="${month ? 'on' : ''}" data-act="cal-view" data-val="month">月</button>
-        <button type="button" class="${month ? '' : 'on'}" data-act="cal-view" data-val="week">週</button>
+  const seg = `<div class="seg seg-sm cal-seg">
+      <button type="button" class="${month ? 'on' : ''}" data-act="cal-view" data-val="month">月</button>
+      <button type="button" class="${month ? '' : 'on'}" data-act="cal-view" data-val="week">週</button>
+    </div>`;
+  if (!month) {
+    return `<div class="cal-bar">${seg}<span class="cal-label"></span><button type="button" class="chip" data-act="cal-today">今日</button></div>
+      <div class="pnav">
+        <button type="button" class="icon-btn" data-act="cal-nav" data-val="-1" aria-label="前の週">‹</button>
+        <div class="pnav-label">${weekLabel(c.week)}</div>
+        <button type="button" class="icon-btn" data-act="cal-nav" data-val="1" aria-label="次の週">›</button>
       </div>
-      <button type="button" class="chip" data-act="cal-today">今日</button>
-    </div>
-    <div class="pnav">
-      <button type="button" class="icon-btn" data-act="cal-nav" data-val="-1" aria-label="前へ">‹</button>
-      <div class="pnav-label">${label}</div>
-      <button type="button" class="icon-btn" data-act="cal-nav" data-val="1" aria-label="次へ">›</button>
-    </div>
-    ${month ? monthGrid(c.month) : weekList(c.week)}`;
+      ${weekList(c.week)}`;
+  }
+  return `<div class="cal-bar">${seg}<span class="cal-label" id="mlabel">${monthLabel(c.month)}</span><button type="button" class="chip" data-act="cal-today">今日</button></div>
+    <div class="mhead">${[...'日月火水木金土'].map((w, i) => `<span class="${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</span>`).join('')}</div>
+    <div class="mlist" id="mlist">${monthRange().map(monthBlock).join('')}</div>`;
 }
 
 function weekLabel(ws) {
@@ -1431,22 +1463,26 @@ function weekLabel(ws) {
   return `${y}${m1}月${Number(ws.slice(8))}日〜${m1 === m2 ? '' : m2 + '月'}${Number(we.slice(8))}日`;
 }
 
-// 月表示：6週分のマス。予定は種類の色の帯で、入りきらない分は「+2」のように数で出す
-function monthGrid(ym) {
-  const start = C.monthGridStart(ym);
+// 月表示の1か月分。その月の日だけマスを出し、予定は種類の色の帯で、入りきらない分は「+2」のように数で出す
+function monthBlock(ym) {
   const t = today();
-  let html = `<div class="mgrid" id="mgrid"><div class="mhead">${[...'日月火水木金土'].map((w, i) => `<span class="${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</span>`).join('')}</div>`;
-  for (let w = 0; w < 6; w++) {
-    const ws = C.addDays(start, 7 * w);
+  const last = L.lastDayOf(ym);
+  let html = `<section class="mblock" data-ym="${ym}"><h3 class="mtitle${L.monthOf(t) === ym ? ' now' : ''}">${monthLabel(ym)}</h3><div class="mgrid">`;
+  for (let ws = C.startOfWeek(`${ym}-01`); ws <= last; ws = C.addDays(ws, 7)) {
+    const inMonth = (c) => L.monthOf(C.addDays(ws, c)) === ym;
     const items = C.layoutWeek(state.calendar, ws);
     // その日に、段に入りきらない予定があるか
-    const more = Array.from({ length: 7 }, (_, c) => items.some((x) => x.lane >= MONTH_LANES && x.col <= c && c < x.col + x.span));
-    const shown = (x, c) => x.lane < MONTH_LANES - 1 || (x.lane === MONTH_LANES - 1 && !more[c]);
+    const more = Array.from({ length: 7 }, (_, c) => inMonth(c) && items.some((x) => x.lane >= MONTH_LANES && x.col <= c && c < x.col + x.span));
+    const shown = (x, c) => inMonth(c) && (x.lane < MONTH_LANES - 1 || (x.lane === MONTH_LANES - 1 && !more[c]));
     html += '<div class="mweek">';
     for (let c = 0; c < 7; c++) {
       const d = C.addDays(ws, c);
+      if (!inMonth(c)) {
+        html += `<span class="mday blank" style="grid-column:${c + 1}"></span>`;
+        continue;
+      }
       const hol = C.holidayName(d);
-      const cls = ['mday', L.monthOf(d) !== ym ? 'out' : '', d === t ? 'today' : '', dayKind(d)].filter(Boolean).join(' ');
+      const cls = ['mday', d === t ? 'today' : '', dayKind(d)].filter(Boolean).join(' ');
       html += `<button type="button" class="${cls}" style="grid-column:${c + 1}" data-act="cal-day" data-date="${d}" aria-label="${dateLabel(d)}${hol ? ' ' + hol : ''}"${hol ? ` title="${esc(hol)}"` : ''}><span class="mnum">${Number(d.slice(8))}</span></button>`;
     }
     for (const x of items) {
@@ -1460,7 +1496,7 @@ function monthGrid(ym) {
         let e = c;
         while (e + 1 < x.col + x.span && shown(x, e + 1)) e++;
         const cat = catOf(x.ev);
-        const cont = c > x.col || x.ev.date < ws; // 前の日から続いている
+        const cont = C.addDays(ws, c) > x.ev.date; // 前の日から続いている
         html += `<span class="mbar${cont ? ' cont' : ''}" style="grid-column:${c + 1} / span ${e - c + 1};grid-row:${x.lane + 2};background:${catColor(cat)};color:${catInk(cat)}">${titleHtml(x.ev.title)}</span>`;
         c = e + 1;
       }
@@ -1472,7 +1508,7 @@ function monthGrid(ym) {
     }
     html += '</div>';
   }
-  return html + '</div><p class="hint cal-hint">左右にスワイプで月を移動。日付をタップすると、その日の予定と家計簿の記録が開きます。</p>';
+  return html + '</div></section>';
 }
 
 // 週表示：7日分を縦に並べる
@@ -1495,25 +1531,75 @@ function weekList(ws) {
   return html + '</section>';
 }
 
-// 月表示の左右のスワイプ
-function bindCalendar() {
-  const g = $('#mgrid');
-  if (!g) return;
-  let x0 = null, y0 = 0;
-  g.addEventListener('touchstart', (ev) => {
-    if (ev.touches.length !== 1) return (x0 = null);
-    x0 = ev.touches[0].clientX;
-    y0 = ev.touches[0].clientY;
+// 月表示：月を縦に並べた欄の中でスクロールする。上下の端に近づいたら、前後の月を足す。
+// entered：ほかの画面からカレンダーに来たとき（見ている月の先頭までスクロールする）
+function bindCalendar(entered) {
+  const list = $('#mlist');
+  document.body.classList.toggle('cal-fixed', !!list);
+  if (!list) return;
+  sizeMonthList();
+  const c = ui.cal;
+  if (entered || c.scrollTo || c.scrollTop == null) scrollToMonth(c.scrollTo || c.month);
+  else list.scrollTop = c.scrollTop;
+  c.scrollTo = null;
+  let ticking = false;
+  list.addEventListener('scroll', () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => {
+      ticking = false;
+      onMonthScroll(list);
+    });
   }, { passive: true });
-  g.addEventListener('touchend', (ev) => {
-    if (x0 == null) return;
-    const dx = ev.changedTouches[0].clientX - x0;
-    const dy = ev.changedTouches[0].clientY - y0;
-    x0 = null;
-    if (Math.abs(dx) < 50 || Math.abs(dy) > Math.abs(dx) * 0.7) return;
-    ui.cal.month = L.addMonths(ui.cal.month, dx < 0 ? 1 : -1);
-    renderCalBody();
-  });
+}
+
+// 欄の高さ：画面の下のタブの上まで
+function sizeMonthList() {
+  const list = $('#mlist');
+  if (!list) return;
+  const bottom = $('.tabbar').getBoundingClientRect().top;
+  list.style.height = Math.max(240, bottom - list.getBoundingClientRect().top) + 'px';
+}
+
+function scrollToMonth(ym) {
+  const list = $('#mlist');
+  const el = list && list.querySelector(`.mblock[data-ym="${ym}"]`);
+  if (!el) return;
+  list.scrollTop = el.offsetTop;
+  ui.cal.scrollTop = list.scrollTop;
+}
+
+function onMonthScroll(list) {
+  const c = ui.cal;
+  // 上下の端に近づいたら月を足す。上に足したときは、見ている位置がずれないように戻す
+  const near = list.clientHeight;
+  if (list.scrollTop < near) {
+    const from = L.addMonths(c.range.from, -MONTH_CHUNK);
+    const months = [];
+    for (let m = from; m < c.range.from; m = L.addMonths(m, 1)) months.push(m);
+    const h = list.scrollHeight;
+    list.insertAdjacentHTML('afterbegin', months.map(monthBlock).join(''));
+    list.scrollTop += list.scrollHeight - h;
+    c.range.from = from;
+  } else if (list.scrollTop + list.clientHeight > list.scrollHeight - near) {
+    const to = L.addMonths(c.range.to, MONTH_CHUNK);
+    const months = [];
+    for (let m = L.addMonths(c.range.to, 1); m <= to; m = L.addMonths(m, 1)) months.push(m);
+    list.insertAdjacentHTML('beforeend', months.map(monthBlock).join(''));
+    c.range.to = to;
+  }
+  c.scrollTop = list.scrollTop;
+  // いちばん上に見えている月を、上の見出しに出す
+  let cur = null;
+  for (const b of list.children) {
+    if (b.offsetTop <= list.scrollTop + 40) cur = b;
+    else break;
+  }
+  if (cur && cur.dataset.ym !== c.month) {
+    c.month = cur.dataset.ym;
+    const lb = $('#mlabel');
+    if (lb) lb.textContent = monthLabel(c.month);
+  }
 }
 
 // 日の詳細：その日の予定と、家計簿の記録・支出の合計
@@ -1535,10 +1621,11 @@ function daySheet(d) {
 }
 
 // 予定の追加・編集。back：閉じたあとに戻る日の詳細の日付
-function eventForm(ev, { date = today(), back = '' } = {}) {
+// draft：種類を追加して戻ってきたときの、入力途中の値
+function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
   const isNew = !ev;
   const cal = state.calendar;
-  const e = ev || { title: '', date, end: null, cat: C.UNCAT, memo: '' };
+  const e = { ...(ev || { title: '', date, end: null, cat: C.UNCAT, memo: '' }), ...(draft || {}) };
   const cats = C.sortedCats(cal);
   let linked = '';
   if (!isNew) {
@@ -1556,16 +1643,16 @@ function eventForm(ev, { date = today(), back = '' } = {}) {
       <p class="hint">先頭に「13-」「1930-22」のように時間を書くと、太字で表示し、その日の予定の中で時刻の順に入ります。</p>
       <input type="hidden" name="cat" value="${e.cat}">
       <span class="field-label">種類</span>
-      <div class="chips" id="ev-cats">${cats.map((c) => `<button type="button" class="chip${c.id === e.cat ? ' on' : ''}" data-cat="${c.id}"><span class="sw" style="background:${catColor(c)}"></span>${esc(c.name)}</button>`).join('')}</div>
+      <div class="chips" id="ev-cats">${cats.map((c) => `<button type="button" class="chip${c.id === e.cat ? ' on' : ''}" data-cat="${c.id}"><span class="sw" style="background:${catColor(c)}"></span>${esc(c.name)}</button>`).join('')}<button type="button" class="chip chip-add" id="ev-cat-add">＋ 追加</button></div>
       <div class="row2">
         <label class="field"><span class="field-label">日付</span><input type="date" name="date" value="${e.date}" required></label>
         <label class="field"><span class="field-label">終了日（任意）</span><input type="date" name="end" value="${e.end || ''}"></label>
       </div>
       <label class="field"><span class="field-label">メモ</span><textarea name="memo" rows="3" placeholder="任意">${esc(e.memo)}</textarea></label>
       ${isNew ? `<div class="row2">
-        <label class="field"><span class="field-label">繰り返し</span><select name="rep"><option value="">しない</option><option value="weekly">毎週</option><option value="monthly">毎月</option></select></label>
-        <label class="field" id="ev-count" hidden><span class="field-label">回数（この日を含む）</span><input name="count" type="number" inputmode="numeric" min="2" max="${C.MAX_REPEAT}" value="4"></label>
-      </div><p class="hint" id="ev-rep-note" hidden>作ったあとは、1件ずつの予定になります。</p>` : ''}
+        <label class="field"><span class="field-label">繰り返し</span><select name="rep">${[['', 'しない'], ['weekly', '毎週'], ['monthly', '毎月']].map(([v, lb]) => `<option value="${v}"${v === (e.rep || '') ? ' selected' : ''}>${lb}</option>`).join('')}</select></label>
+        <label class="field" id="ev-count"${e.rep ? '' : ' hidden'}><span class="field-label">回数（この日を含む）</span><input name="count" type="number" inputmode="numeric" min="2" max="${C.MAX_REPEAT}" value="${esc(e.count || 4)}"></label>
+      </div><p class="hint" id="ev-rep-note"${e.rep ? '' : ' hidden'}>作ったあとは、1件ずつの予定になります。</p>` : ''}
       ${src}${linked}
       <div class="sheet-actions">
         ${isNew ? '' : `<button type="button" class="danger" data-act="cal-delete" data-id="${ev.id}" data-back="${back}">削除</button>`}
@@ -1576,6 +1663,15 @@ function eventForm(ev, { date = today(), back = '' } = {}) {
   $('#sheet-body').scrollTop = 0;
   const form = $('#ev-form');
   const f = form.elements;
+  // 種類の「＋ 追加」：入力途中の値をとっておき、追加したらその種類を選んだ状態で開き直す
+  $('#ev-cat-add').addEventListener('click', () => {
+    const vals = { title: f.title.value, cat: f.cat.value, date: f.date.value, end: f.end.value || null, memo: f.memo.value };
+    if (isNew) Object.assign(vals, { rep: f.rep.value, count: f.count.value });
+    catAddSheet({
+      onDone: (c) => eventForm(ev, { back, draft: { ...vals, cat: c.id } }),
+      onCancel: () => eventForm(ev, { back, draft: vals }),
+    });
+  });
   $('#ev-cats').addEventListener('click', (x) => {
     const b = x.target.closest('[data-cat]');
     if (!b) return;
@@ -1641,7 +1737,7 @@ function calManageSheet() {
         </span></li>`,
       )
       .join('')}</ul>
-    <div class="row2 add-cat"><input id="new-cat-name" placeholder="新しい種類の名前" autocomplete="off"><button type="button" class="ghost" data-act="cat-add">追加</button></div>
+    <button type="button" class="ghost" data-act="cat-add">種類を追加</button>
     <p class="hint">削除した種類の予定は「未分類」になります。</p>
 
     <h2 class="sheet-h2">費用の科目と種類</h2>
@@ -1741,6 +1837,63 @@ function importSheet(name, items) {
   draw();
 }
 
+// 種類を追加する。問題があればその内容を、なければ追加した種類を返す。「未分類」はいちばん下のままにする
+async function addCat(name, color) {
+  name = (name || '').trim();
+  if (!name) return { error: '種類の名前を入力してください' };
+  if (state.calendar.cats.some((c) => c.name === name)) return { error: '同じ名前の種類があります' };
+  const cat = { id: L.uid(), name, color: PALETTE.includes(color) ? color : unusedCatColor(), order: 0 };
+  await commit((s) => {
+    const c = s.calendar;
+    const order = Math.max(-1, ...c.cats.filter((x) => x.id !== C.UNCAT).map((x) => x.order));
+    for (const x of c.cats) if (x.order > order) x.order++;
+    cat.order = order + 1;
+    c.cats.push(cat);
+  });
+  return { cat };
+}
+
+// まだほかの種類に使われていない色のうち最初のもの
+function unusedCatColor() {
+  const used = new Set(state.calendar.cats.map((c) => c.color));
+  return PALETTE.find((k) => k !== 's-other' && !used.has(k)) || 's9';
+}
+
+// 種類の追加の画面（名前と色）。onDone(追加した種類)、onCancel()
+function catAddSheet({ onDone, onCancel }) {
+  openSheet(`
+    <h2>予定の種類の追加</h2>
+    <form id="cat-form">
+      <label class="field"><span class="field-label">名前</span><input name="catname" autocomplete="off" placeholder="例：サークル"></label>
+      <span class="field-label">色</span>
+      ${swatchPicker(unusedCatColor(), 'catcolor')}
+      <p class="hint">名前・色の変更と削除は、設定画面の「予定の種類」か、カレンダーの「種類・取り込み」からできます。</p>
+      <div class="sheet-actions">
+        <button type="button" class="ghost" id="cat-cancel">戻る</button>
+        <button type="submit" class="primary">追加</button>
+      </div>
+    </form>`);
+  $('#sheet-body').scrollTop = 0;
+  const form = $('#cat-form');
+  bindSwatches(form);
+  $('#cat-cancel').addEventListener('click', onCancel);
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const r = await addCat(form.elements.catname.value, form.elements.catcolor.value);
+    if (r.error) return toast(r.error);
+    onDone(r.cat);
+    toast(`予定の種類「${r.cat.name}」を追加しました`);
+  });
+  form.elements.catname.focus();
+}
+
+// 種類の操作が終わったあと：設定画面からならシートを閉じ、カレンダーからなら種類の管理に戻る
+function catBack(from, sheetOpen = true) {
+  if (from === 'settings') {
+    if (sheetOpen) closeSheet();
+  } else calManageSheet();
+}
+
 // ---- 入力画面の「予定」の1行
 // 自動入力（固定費）・開始残高・評価額の仕訳は予定につながない
 function eventPickAllowed() {
@@ -1756,8 +1909,32 @@ function eventPicker() {
   return `<div class="field-label">予定</div><div class="chips">${evs
     .map((ev) => `<button type="button" class="chip ev-chip${ev.id === d.eventId ? ' on' : ''}" data-act="ev-pick" data-id="${ev.id}"><span class="sw" style="background:${catColor(catOf(ev))}"></span><span class="ev-chip-t">${titleHtml(ev.title)}</span></button>`)
     .join('')}<button type="button" class="chip chip-add${d.newEventOpen ? ' on-add' : ''}" data-act="ev-new">＋ 新しい予定</button></div>
-    ${d.newEventOpen ? `<label class="field ev-new"><input type="text" data-field="newEvent" value="${esc(d.newEvent)}" placeholder="予定名（例：13-面接）" autocomplete="off" aria-label="新しい予定の名前"></label>
-      <p class="hint">保存すると、この日の予定としてカレンダーに作り、この記録とつなぎます。同じ日に同じ名前の予定があれば、それにつなぎます。</p>` : ''}`;
+    ${d.newEventOpen ? newEventFields() : ''}`;
+}
+
+// 新しい予定の名前と種類（色）。種類を選ばなければ、費用の科目との対応で決まる（選ばれた状態で表示する）
+function newEventFields() {
+  const d = ui.draft;
+  const cur = newEventCat(draftLines().lines);
+  const auto = !d.newEventCat;
+  return `<div class="ev-new">
+      <input type="text" data-field="newEvent" value="${esc(d.newEvent)}" placeholder="予定名（例：13-面接）" autocomplete="off" aria-label="新しい予定の名前">
+      <div class="chips ev-cats" role="radiogroup" aria-label="新しい予定の種類">${C.sortedCats(state.calendar)
+        .map((c) => `<button type="button" role="radio" aria-checked="${c.id === cur}" class="chip chip-sm${c.id === cur ? ' on' : ''}" data-act="ev-cat" data-id="${c.id}"><span class="sw" style="background:${catColor(c)}"></span>${esc(c.name)}</button>`)
+        .join('')}<button type="button" class="chip chip-sm chip-add" data-act="ev-cat-add">＋ 追加</button></div>
+      <p class="hint">${auto ? '種類は科目から自動で選んでいます。タップで変えられます。' : '種類を選びました。もう一度タップすると、科目から自動で選ぶのに戻ります。'}保存すると、この日の予定としてカレンダーに作り、この記録とつなぎます。同じ日に同じ名前の予定があれば、それにつなぎます。</p>
+    </div>`;
+}
+
+// 新しい予定の種類：選んだ種類があればそれ、なければ仕訳の費用の科目との対応（lines がなければ入力中の科目から）
+function newEventCat(lines) {
+  const d = ui.draft;
+  if (d.newEventCat && state.calendar.cats.some((c) => c.id === d.newEventCat)) return d.newEventCat;
+  if (!lines) {
+    const accId = ui.mode === 'expense' ? d.acc : ui.mode === 'journal' ? d.lines.find((l) => l.side === 'dr' && acc(l.acc)?.type === 'expense')?.acc : null;
+    lines = accId ? [{ acc: accId, side: 'dr', amount: 1 }] : [];
+  }
+  return C.catForLines(state.calendar, lines, state.accounts);
 }
 
 function renderEventPicker() {
@@ -1780,18 +1957,22 @@ const CAL_ACTIONS = {
     if (ui.cal.view === 'week') {
       const t = today();
       ui.cal.week = C.startOfWeek(L.monthOf(t) === ui.cal.month ? t : `${ui.cal.month}-01`);
-    } else ui.cal.month = L.monthOf(C.addDays(ui.cal.week, 3));
+    } else {
+      ui.cal.month = L.monthOf(C.addDays(ui.cal.week, 3));
+      ui.cal.scrollTo = ui.cal.month;
+    }
     renderCalBody();
   },
   'cal-nav': (el) => {
-    const n = Number(el.dataset.val);
-    if (ui.cal.view === 'month') ui.cal.month = L.addMonths(ui.cal.month, n);
-    else ui.cal.week = C.addDays(ui.cal.week, 7 * n);
+    ui.cal.week = C.addDays(ui.cal.week, 7 * Number(el.dataset.val));
     renderCalBody();
   },
   'cal-today': () => {
-    ui.cal.month = L.monthOf(today());
     ui.cal.week = C.startOfWeek(today());
+    if (ui.cal.view === 'month') {
+      ui.cal.month = L.monthOf(today());
+      ui.cal.scrollTo = ui.cal.month;
+    }
     renderCalBody();
   },
   'cal-clear': () => {
@@ -1817,33 +1998,23 @@ const CAL_ACTIONS = {
   'cal-goto': (el) => {
     const d = el.dataset.date;
     ui.tab = 'calendar';
-    Object.assign(ui.cal, { q: '', month: L.monthOf(d), week: C.startOfWeek(d) });
+    Object.assign(ui.cal, { q: '', month: L.monthOf(d), week: C.startOfWeek(d), scrollTo: L.monthOf(d) });
     window.scrollTo(0, 0);
     render();
     daySheet(d);
   },
   'cal-manage': () => calManageSheet(),
-  'cat-add': async () => {
-    const name = $('#new-cat-name').value.trim();
-    if (!name) return toast('種類の名前を入力してください');
-    if (state.calendar.cats.some((c) => c.name === name)) return toast('同じ名前の種類があります');
-    const used = new Set(state.calendar.cats.map((c) => c.color));
-    const color = PALETTE.find((k) => k !== 's-other' && !used.has(k)) || 's9';
-    await commit((s) => {
-      const c = s.calendar;
-      const order = Math.max(-1, ...c.cats.filter((x) => x.id !== C.UNCAT).map((x) => x.order));
-      // 「未分類」はいちばん下のままにする
-      for (const x of c.cats) if (x.order > order) x.order++;
-      c.cats.push({ id: L.uid(), name, color, order: order + 1 });
-    });
-    calManageSheet();
+  'cat-add': (el) => {
+    const back = () => catBack(el.dataset.from);
+    catAddSheet({ onDone: back, onCancel: back });
   },
   'cat-rename': async (el) => {
     const c = state.calendar.cats.find((x) => x.id === el.dataset.id);
     const name = prompt('新しい名前', c.name);
     if (!name || !name.trim()) return;
+    if (state.calendar.cats.some((x) => x !== c && x.name === name.trim())) return toast('同じ名前の種類があります');
     await commit(() => (c.name = name.trim()));
-    calManageSheet();
+    catBack(el.dataset.from, false);
   },
   'cat-move': async (el) => {
     const list = C.sortedCats(state.calendar);
@@ -1859,17 +2030,18 @@ const CAL_ACTIONS = {
     const n = state.calendar.events.filter((e) => e.cat === c.id).length;
     if (!confirm(`種類「${c.name}」を削除しますか？${n ? `この種類の予定（${n}件）は「未分類」になります。` : ''}`)) return;
     await commit((s) => C.removeCat(s.calendar, c.id));
-    calManageSheet();
+    catBack(el.dataset.from, false);
   },
   'cat-color': (el) => {
     const c = state.calendar.cats.find((x) => x.id === el.dataset.id);
+    const from = el.dataset.from || '';
     openSheet(`
       <h2>色の変更</h2>
       <form id="color-form">
         <p class="color-preview"><span class="sw" id="color-sw" style="background:${catColor(c)}"></span>${esc(c.name)}</p>
         ${swatchPicker(c.color)}
         <div class="sheet-actions">
-          <button type="button" class="ghost" data-act="cal-manage">戻る</button>
+          ${from === 'settings' ? '<button type="button" class="ghost" data-act="close-sheet">閉じる</button>' : '<button type="button" class="ghost" data-act="cal-manage">戻る</button>'}
           <button type="submit" class="primary">保存</button>
         </div>
       </form>`);
@@ -1879,7 +2051,8 @@ const CAL_ACTIONS = {
       ev.preventDefault();
       const k = form.elements.acccolor.value;
       await commit(() => (c.color = k));
-      calManageSheet();
+      catBack(from);
+      toast(`「${c.name}」の色を変更しました`);
     });
   },
   'ics-pick': () => $('#ics-file').click(),
@@ -1894,14 +2067,28 @@ const CAL_ACTIONS = {
   'ev-pick': (el) => {
     const d = ui.draft;
     d.eventId = d.eventId === el.dataset.id ? null : el.dataset.id; // もう一度タップすると外れる
-    Object.assign(d, { newEventOpen: false, newEvent: '' });
+    Object.assign(d, { newEventOpen: false, newEvent: '', newEventCat: null });
     renderEventPicker();
   },
+  'ev-cat': (el) => {
+    const d = ui.draft;
+    d.newEventCat = d.newEventCat === el.dataset.id ? null : el.dataset.id;
+    renderEventPicker();
+  },
+  'ev-cat-add': () =>
+    catAddSheet({
+      onDone: (c) => {
+        ui.draft.newEventCat = c.id; // 追加した種類を選んだ状態にする
+        closeSheet();
+        render();
+      },
+      onCancel: () => closeSheet(),
+    }),
   'ev-new': () => {
     const d = ui.draft;
     d.newEventOpen = !d.newEventOpen;
     if (d.newEventOpen) d.eventId = null;
-    else d.newEvent = '';
+    else Object.assign(d, { newEvent: '', newEventCat: null });
     renderEventPicker();
     if (d.newEventOpen) $('#ev-pick input')?.focus();
   },
@@ -1962,13 +2149,17 @@ function renderBanner() {
 // ---------------------------------------------------------------- 描画とイベント
 const VIEWS = { input: viewInput, history: viewHistory, calendar: viewCalendar, charts: viewCharts, settings: viewSettings };
 
+let lastTab = null; // 前に描いた画面（カレンダーに来たときを知るため）
 function render() {
+  const entered = lastTab !== ui.tab;
+  lastTab = ui.tab;
   $('#view').innerHTML = VIEWS[ui.tab]();
   document.querySelectorAll('.tabbar button').forEach((b) => b.setAttribute('aria-current', b.dataset.tab === ui.tab ? 'page' : 'false'));
   renderBanner();
   if (ui.tab === 'input') updatePreview();
   if (ui.tab === 'charts') drawCharts();
-  if (ui.tab === 'calendar') bindCalendar();
+  if (ui.tab === 'calendar') bindCalendar(entered);
+  else document.body.classList.remove('cal-fixed');
   if (ui.tab === 'settings' && navigator.storage && navigator.storage.persisted) {
     navigator.storage.persisted().then((p) => {
       const el = $('#persist-status');
@@ -2018,6 +2209,7 @@ const ACTIONS = {
   pick: (el) => {
     ui.draft[el.dataset.field] = el.dataset.val;
     el.parentElement.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c === el));
+    if (el.dataset.field === 'acc' && ui.draft.newEventOpen && !ui.draft.newEventCat) renderEventPicker(); // 新しい予定の種類は科目で決まる
     updatePreview();
   },
   jadd: () => {
@@ -2243,7 +2435,10 @@ document.addEventListener('change', async (ev) => {
 let resizeTimer;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(drawCharts, 150);
+  resizeTimer = setTimeout(() => {
+    drawCharts();
+    sizeMonthList();
+  }, 150);
 });
 
 // 番号入力画面では、パソコンのキーボードの数字・Backspace・Esc も使える
