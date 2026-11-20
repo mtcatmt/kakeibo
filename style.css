@@ -353,6 +353,8 @@ body.locked { overflow: hidden; }
 .keypad button:active { background: var(--line); }
 .keypad .key-text { background: none; box-shadow: none; font-size: 13px; color: var(--accent); padding: 0; }
 .keypad .key-back { background: none; box-shadow: none; font-size: 24px; }
+.lock-bio { margin-top: 22px; border: 0; background: none; color: var(--accent); font-size: 16px; padding: 10px 16px; }
+.lock-bio-state { margin-top: 14px; }
 .shake { animation: shake 0.35s; }
 @keyframes shake {
   0%, 100% { transform: translateX(0); }

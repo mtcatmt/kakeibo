@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.18.1';
+const APP_VERSION = '1.19.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -993,9 +993,13 @@ function viewSettings() {
           <div class="btn-row">
             <button type="button" class="ghost" data-act="pin-change">番号を変更</button>
             <button type="button" class="ghost" data-act="pin-off">ロックをやめる</button>
-          </div>`
+          </div>
+          ${bioAvailable
+            ? `<p class="lock-bio-state">Face ID：${lock.bio ? 'オン（番号の代わりに Face ID でも開けます）' : 'オフ'}</p>
+              <button type="button" class="ghost" data-act="${lock.bio ? 'bio-off' : 'bio-on'}">${lock.bio ? 'Face IDをやめる' : 'Face IDを使う'}</button>`
+            : ''}`
         : `<p>オフ</p><button type="button" class="ghost" data-act="pin-set">番号を設定</button>`}
-      <p class="hint">この番号は、この端末でアプリの画面を開くのを止めるためのもので、保存されたデータそのものは暗号化されません。番号はバックアップのファイルには含まれません。番号を忘れた場合は、ロック画面の「忘れた場合」から、データをすべて削除して解除します（バックアップがあれば復元できます）。</p>
+      <p class="hint">この番号と Face ID は、この端末でアプリの画面を開くのを止めるためのもので、保存されたデータそのものは暗号化されません。番号はバックアップのファイルには含まれません。Face ID を使うと、iPhoneの「パスワード」アプリに「家計簿のロック」のパスキーが保存されます。番号を忘れた場合は、Face ID で開いて番号を変更するか、ロック画面の「忘れた場合」から、データをすべて削除して解除します（バックアップがあれば復元できます）。</p>
     </section>`}
 
     <section class="card">
@@ -1220,15 +1224,77 @@ async function importBackup(file) {
   toast('バックアップから復元しました');
 }
 
-// ---------------------------------------------------------------- ロック（4桁の番号）
+// ---------------------------------------------------------------- ロック（4桁の番号・Face ID）
 // 番号は帳簿のデータ（state）とは別のキーに保存し、バックアップのファイルには含めない。
 // アプリの画面を開くのを止めるためのもので、端末に保存されたデータそのものは暗号化しない。
+// Face ID は WebAuthn（パスキー）で呼び出す。サーバーがないので、端末の中で「Face ID が通ったか」だけを見る（番号と同じく見た目を止めるもの）
 const PIN_LEN = 4;
 const LOCK_AFTER = [[0, 'すぐ'], [1, '1分'], [5, '5分'], [15, '15分']];
-let lock = null; // { salt, hash, after }。after：ほかのアプリに切り替えてからロックするまでの分数
+let lock = null; // { salt, hash, after, bio }。after：ほかのアプリに切り替えてからロックするまでの分数。bio：Face ID のパスキー { id }（なければ null）
 let locked = false;
 let hiddenAt = null;
-let padCtl = null; // 表示中の番号入力画面の操作（キーを押す・閉じる）
+let padCtl = null; // 表示中の番号入力画面の操作（キーを押す・閉じる・Face ID を試す）
+let bioAvailable = false; // この端末で Face ID（指紋なども含む、端末の生体認証）を使えるか。init() で調べる
+let bioBusy = false; // Face ID の画面を出している間は、もう一度呼ばない
+
+const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const fromB64u = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+const randomBytes = (n) => crypto.getRandomValues(new Uint8Array(n));
+const BIO_USER_ID = new TextEncoder().encode('kakeibo-lock'); // 決まった値にして、設定し直したときに同じパスキーを上書きする
+
+// Face ID のパスキーを作る。タップの直後に呼ぶ必要があるので、create() より前で await しない
+function registerBio() {
+  if (!lock || !bioAvailable) return toast('この端末では Face ID を使えません');
+  navigator.credentials
+    .create({
+      publicKey: {
+        rp: { name: '家計簿' },
+        user: { id: BIO_USER_ID, name: '家計簿のロック', displayName: '家計簿のロック' },
+        challenge: randomBytes(32),
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+        authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
+        attestation: 'none',
+        timeout: 60000,
+      },
+    })
+    .then(
+      async (cred) => {
+        if (!cred) return;
+        try {
+          await saveLock({ ...lock, bio: { id: b64u(cred.rawId) } });
+        } catch (e) {
+          return toast('保存できませんでした：' + e.message);
+        }
+        render();
+        toast('Face IDで開けるようにしました');
+      },
+      (e) => toast(e.name === 'NotAllowedError' ? 'Face IDを設定しませんでした' : 'Face IDを設定できませんでした：' + e.message),
+    );
+}
+
+// Face ID を出し、通れば true を返す（キャンセル・失敗・別のパスキーは false）
+async function unlockBio(signal) {
+  if (!lock?.bio || bioBusy) return false;
+  bioBusy = true;
+  try {
+    const cred = await navigator.credentials.get({
+      signal,
+      publicKey: {
+        challenge: randomBytes(32),
+        allowCredentials: [{ type: 'public-key', id: fromB64u(lock.bio.id), transports: ['internal'] }],
+        userVerification: 'required',
+        timeout: 60000,
+      },
+    });
+    // 認証器のデータの33バイト目の UV（本人確認をした）の印も確かめる
+    const uv = (new Uint8Array(cred?.response?.authenticatorData || new ArrayBuffer(0))[32] & 0x04) !== 0;
+    return !!cred && b64u(cred.rawId) === lock.bio.id && uv;
+  } catch {
+    return false;
+  } finally {
+    bioBusy = false;
+  }
+}
 
 const toHex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 async function hashPin(pin, salt) {
@@ -1254,11 +1320,13 @@ function cover(on) {
 
 // 番号の入力画面を出す。4桁が入ったら check に渡し、エラー文が返ればやり直し、null なら閉じて番号を返す。
 // cancel：「キャンセル」で null を返す。forgot：「忘れた場合」を押したときの処理（true を返したら閉じる）
-function askPin({ title, check = async () => null, cancel = false, forgot = null }) {
+// bio：「Face IDで解除」のボタンを出す。Face ID が通ったら 'bio' を返す
+function askPin({ title, check = async () => null, cancel = false, forgot = null, bio = false }) {
   return new Promise((resolve) => {
     const el = $('#lock');
     let entered = '';
     let busy = false;
+    let done = false;
     const left = cancel
       ? '<button type="button" class="key-text" data-key="cancel">キャンセル</button>'
       : forgot
@@ -1273,21 +1341,37 @@ function askPin({ title, check = async () => null, cancel = false, forgot = null
         ${left}
         <button type="button" data-key="0">0</button>
         <button type="button" class="key-back" data-key="back" aria-label="1文字消す">⌫</button>
-      </div></div>`;
+      </div>
+      ${bio ? '<button type="button" class="lock-bio" data-key="bio">Face IDで解除</button>' : ''}</div>`;
     const dots = el.querySelector('.lock-dots');
     const errEl = el.querySelector('.lock-err');
     const update = (err) => {
       dots.querySelectorAll('span').forEach((s, i) => s.classList.toggle('on', i < entered.length));
       errEl.textContent = err;
     };
+    let bioCtl = null; // 番号で開いたときに、待っている Face ID の呼び出しを止める
     const finish = (v) => {
+      if (done) return;
+      done = true;
+      bioCtl?.abort();
       padCtl = null;
       el.onclick = null;
       cover(false);
       resolve(v);
     };
+    // auto：ロック画面を出したときに自動で試す場合。失敗しても何も出さない（iPhoneはタップなしの呼び出しを断ることがある）。
+    // Face ID を待っている間も、番号は入力できる
+    const tryBio = async (auto = false) => {
+      if (!bio || done || bioBusy) return;
+      bioCtl = new AbortController();
+      const ok = await unlockBio(bioCtl.signal);
+      if (done) return;
+      if (ok) return finish('bio');
+      if (!auto) update('Face IDで解除できませんでした');
+    };
     const press = async (k) => {
       if (busy) return;
+      if (k === 'bio') return tryBio();
       if (k === 'cancel') return cancel && finish(null);
       if (k === 'forgot') {
         if (forgot && (await forgot())) finish(null);
@@ -1312,7 +1396,7 @@ function askPin({ title, check = async () => null, cancel = false, forgot = null
       const b = ev.target.closest('[data-key]');
       if (b) press(b.dataset.key);
     };
-    padCtl = { press, close: () => finish(null) };
+    padCtl = { press, close: () => finish(null), bio: tryBio };
     cover(true);
   });
 }
@@ -1321,7 +1405,10 @@ async function lockNow() {
   if (!lock || locked) return;
   locked = true;
   padCtl?.close(); // 番号の設定・変更の途中なら、それをやめてからロックする
-  await askPin({ title: '番号を入力', check: checkPin, forgot: forgotPin });
+  const p = askPin({ title: '番号を入力', check: checkPin, forgot: forgotPin, bio: !!lock.bio });
+  // 画面が見えていれば、すぐに Face ID を出す（隠れたときにロックした場合は、戻ったときに visibilitychange で出す）
+  if (lock.bio && document.visibilityState === 'visible') padCtl?.bio(true);
+  await p;
   locked = false;
 }
 
@@ -1334,7 +1421,7 @@ async function setPin(doneMsg = '番号を設定しました') {
   if (!p2) return;
   const salt = toHex(crypto.getRandomValues(new Uint8Array(16)));
   try {
-    await saveLock({ salt, hash: await hashPin(p1, salt), after: lock ? lock.after : 1 });
+    await saveLock({ salt, hash: await hashPin(p1, salt), after: lock ? lock.after : 1, bio: lock?.bio || null });
   } catch (e) {
     return toast('番号を保存できませんでした：' + e.message);
   }
@@ -2476,10 +2563,20 @@ const ACTIONS = {
   'add-acc-inline': (el) => addAccountSheet(el.dataset.field, el.dataset.types.split(',')),
   'pin-set': () => setPin(),
   'pin-change': async () => {
-    if (await askPin({ title: '今の番号を入力', cancel: true, check: checkPin })) setPin('番号を変更しました');
+    if (await askPin({ title: '今の番号を入力', cancel: true, check: checkPin, bio: !!lock?.bio })) setPin('番号を変更しました');
+  },
+  'bio-on': () => registerBio(),
+  'bio-off': async () => {
+    try {
+      await saveLock({ ...lock, bio: null });
+    } catch (e) {
+      return toast('保存できませんでした：' + e.message);
+    }
+    render();
+    toast('Face IDをやめました。パスキーは「パスワード」アプリから削除できます');
   },
   'pin-off': async () => {
-    if (!(await askPin({ title: '今の番号を入力', cancel: true, check: checkPin }))) return;
+    if (!(await askPin({ title: '今の番号を入力', cancel: true, check: checkPin, bio: !!lock?.bio }))) return;
     try {
       await saveLock(null);
     } catch (e) {
@@ -2595,7 +2692,8 @@ document.addEventListener('visibilitychange', async () => {
     if (lock && lock.after === 0) lockNow();
     return;
   }
-  if (lock && hiddenAt != null && Date.now() - hiddenAt >= lock.after * 60000) lockNow();
+  if (lock && !locked && hiddenAt != null && Date.now() - hiddenAt >= lock.after * 60000) lockNow();
+  else if (locked && lock?.bio) padCtl?.bio(true); // 隠れたときにロックした場合（「すぐ」）は、ここで Face ID を出す
   hiddenAt = null;
   if (!state) return;
   const created = L.generateRecurring(state, today());
@@ -2659,6 +2757,7 @@ async function init() {
       dbp = openDB();
       stored = await idbGet('state');
       lock = (await idbGet('lock')) || null;
+      bioAvailable = !!(await window.PublicKeyCredential?.isUserVerifyingPlatformAuthenticatorAvailable?.().catch(() => false));
     } catch (e) {
       storageOk = false;
       toast('データの保存場所を開けませんでした。この状態では入力が保存されません：' + (e && e.message));
