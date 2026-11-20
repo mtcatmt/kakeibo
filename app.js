@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.13.0';
+const APP_VERSION = '1.14.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -1374,14 +1374,15 @@ const titleHtml = (title) => {
 const md = (d) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
 const dayKind = (d) => (C.holidayName(d) || C.weekday(d) === 0 ? 'sun' : C.weekday(d) === 6 ? 'sat' : '');
 
-// 予定ごとの、つながっている記録の金額（予定のid → { expense, income, n }）
+// 予定ごとの、つながっている支出の合計（予定のid → { expense, n }）。収入・振替はカレンダーに出さない
 function eventSums() {
   const m = new Map();
   for (const e of state.entries) {
     if (!e.eventId) continue;
     const a = C.entryAmounts(e, state.accounts);
-    const x = m.get(e.eventId) || { expense: 0, income: 0, n: 0 };
-    m.set(e.eventId, { expense: x.expense + a.expense, income: x.income + a.income, n: x.n + 1 });
+    if (!a.expense) continue;
+    const x = m.get(e.eventId) || { expense: 0, n: 0 };
+    m.set(e.eventId, { expense: x.expense + a.expense, n: x.n + 1 });
   }
   return m;
 }
@@ -1397,7 +1398,7 @@ function eventRow(ev, sums, { back = '', withDate = false } = {}) {
   // 時刻：TimeTreeから取り込んだ時刻はここに出す（予定名の先頭の時間は、予定名の中で太字になる）
   const clock = !timed ? (period ? '' : '終日') : ev.time ? C.timeLabel(ev.time) : '';
   const sub = [when, clock, cat.name, period, (ev.memo || '').split('\n')[0]].filter(Boolean).join('　');
-  const amt = s && (s.expense || s.income) ? `<span class="entry-amt ${s.expense ? '' : 'in'}">${s.expense ? '−' + yen(s.expense) : '+' + yen(s.income)}</span>` : '';
+  const amt = s && s.expense ? `<span class="entry-amt">−${yen(s.expense)}</span>` : '';
   return `<li><button type="button" class="entry cev" data-act="cal-edit" data-id="${ev.id}" data-back="${back}">
     <span class="cev-bar${timed ? ' part' : ''}" style="--c:${catColor(cat)}"></span>
     <span class="entry-main"><span class="entry-title">${titleHtml(ev.title)}</span><span class="entry-sub">${esc(sub)}</span></span>${amt}</button></li>`;
@@ -1614,15 +1615,16 @@ function daySheet(d) {
   const hol = C.holidayName(d);
   const sums = eventSums();
   const evs = C.eventsOn(state.calendar, d);
-  const entries = state.entries.filter((e) => e.date === d).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  // 家計簿は支出の記録だけ（収入・振替は出さない）
+  const entries = state.entries.filter((e) => e.date === d && C.isExpenseEntry(e, state.accounts)).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   const total = C.sumAmounts(entries, state.accounts);
   openSheet(`
     <h2>${L.yearOf(d) !== L.yearOf(today()) ? L.yearOf(d) + '年' : ''}${dateLabel(d)}${hol ? `<span class="hol">${esc(hol)}</span>` : ''}</h2>
     <h3 class="day">予定</h3>
     ${evs.length ? `<ul class="entries">${evs.map((ev) => eventRow(ev, sums, { back: d })).join('')}</ul>` : '<p class="empty">予定はありません</p>'}
     <button type="button" class="ghost" data-act="cal-add" data-date="${d}" data-back="${d}">＋ 予定を追加</button>
-    <h3 class="day day-sum"><span>家計簿</span>${total.expense ? `<span>支出 ${yen(total.expense)}</span>` : ''}</h3>
-    ${entries.length ? `<ul class="entries">${entries.map(entryRow).join('')}</ul>` : '<p class="empty">記録はありません</p>'}
+    <h3 class="day day-sum"><span>家計簿の支出</span>${total.expense ? `<span>${yen(total.expense)}</span>` : ''}</h3>
+    ${entries.length ? `<ul class="entries">${entries.map(entryRow).join('')}</ul>` : '<p class="empty">支出の記録はありません</p>'}
     <div class="sheet-actions"><button type="button" class="ghost" data-act="close-sheet">閉じる</button></div>`);
   $('#sheet-body').scrollTop = 0;
 }
@@ -1640,11 +1642,11 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
   let spanTouched = draft && 'spanTouched' in draft ? draft.spanTouched : typeof e.allDay === 'boolean';
   let linked = '';
   if (!isNew) {
-    const list = C.linkedEntries(state, ev.id);
+    // つながっている支出の記録だけ（収入・振替は出さない）
+    const list = C.linkedEntries(state, ev.id).filter((x) => C.isExpenseEntry(x, state.accounts));
     const sum = C.sumAmounts(list, state.accounts);
-    const parts = [sum.expense ? `支出 ${yen(sum.expense)}` : '', sum.income ? `収入 ${yen(sum.income)}` : ''].filter(Boolean).join('・');
-    linked = `<h3 class="day day-sum"><span>つながっている家計簿の記録</span>${parts ? `<span>${parts}</span>` : ''}</h3>
-      ${list.length ? `<ul class="entries">${list.map((x) => entryRow(x).replace('<span class="entry-sub">', `<span class="entry-sub">${md(x.date)}　`)).join('')}</ul>` : '<p class="hint">ありません。入力画面の「予定」でこの予定を選ぶと、ここに出ます。</p>'}`;
+    linked = `<h3 class="day day-sum"><span>つながっている支出</span>${sum.expense ? `<span>${yen(sum.expense)}</span>` : ''}</h3>
+      ${list.length ? `<ul class="entries">${list.map((x) => entryRow(x).replace('<span class="entry-sub">', `<span class="entry-sub">${md(x.date)}　`)).join('')}</ul>` : '<p class="hint">ありません。入力画面の「予定」でこの予定を選んだ支出が、ここに出ます。</p>'}`;
   }
   const src = ev?.src === 'timetree' ? `<p class="hint">TimeTreeから取り込んだ予定です（${ev.time ? `時刻 ${C.timeLabel(ev.time)}` : '終日'}）。</p>` : '';
   let rep = '';

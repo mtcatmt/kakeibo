@@ -391,3 +391,14 @@ test('一日の予定か一日の一部の予定かを選ぶ：開始時刻か�
   C.ensureCalendar(s);
   assert.equal('allDay' in bad, false);
 });
+
+test('カレンダーに出す家計簿の記録は支出だけ（収入・振替・全額が立替の支出は出さない）', () => {
+  const s = L.defaultState();
+  s.accounts.push({ id: 'adv', name: '立替金', type: 'asset', archived: false });
+  const is = (lines) => C.isExpenseEntry({ lines }, s.accounts);
+  assert.equal(is(L.buildSimpleLines('expense', { acc: 'food', from: 'cash' }, 800)), true);
+  assert.equal(is(L.buildAdvanceLines({ acc: 'food', from: 'card', advAcc: 'adv' }, 3000, 2000)), true); // 自分の分がある
+  assert.equal(is(L.buildSimpleLines('income', { acc: 'job1', to: 'bank' }, 5000)), false);
+  assert.equal(is(L.buildSimpleLines('transfer', { from: 'bank', to: 'cash' }, 1000)), false);
+  assert.equal(is([{ side: 'dr', acc: 'adv', amount: 3000 }, { side: 'cr', acc: 'card', amount: 3000 }]), false); // 全額が立替
+});

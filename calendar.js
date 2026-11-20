@@ -274,6 +274,8 @@ export function sumAmounts(entries, accounts) {
     { expense: 0, income: 0 },
   );
 }
+// 支出の記録か（費用の行がある）。カレンダーには支出の記録だけを出す（収入・振替は出さない）
+export const isExpenseEntry = (entry, accounts) => entryAmounts(entry, accounts).expense !== 0;
 export const linkedEntries = (state, eventId) =>
   state.entries.filter((e) => e.eventId === eventId).sort((a, b) => (a.date === b.date ? (a.createdAt || 0) - (b.createdAt || 0) : a.date < b.date ? -1 : 1));
 
