@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.14.0';
+const APP_VERSION = '1.15.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -1780,9 +1780,12 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
         if (dates.length > 1) msg = `予定を${dates.length}件作りました`;
       } else {
         const moved = ev.date !== d || C.lastDay(ev) !== (end && end > d ? end : d);
+        const hadStart = C.startOf(ev) != null;
         Object.assign(ev, data, { date: d, end: end && end > d ? end : null });
         C.setTimed(ev, part);
-        if (moved) C.placeEvent(c, ev); // 日付を変えたら、新しい日の並び順に入れる
+        // 日付を変えたとき、または開始時刻がある（あった）ときは、その日の並び順に入れ直す
+        // （予定名の時間を足したり変えたりしたら、時刻の順の位置に動く。時間を消したら、いちばん下に）
+        if (moved || hadStart || C.startOf(ev) != null) C.placeEvent(c, ev);
       }
     });
     calBack(back);

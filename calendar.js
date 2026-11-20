@@ -22,29 +22,41 @@ export const startOfWeek = (d) => addDays(d, -weekday(d)); // 日曜はじまり
 export const monthGridStart = (ym) => startOfWeek(`${ym}-01`);
 
 // ---------------------------------------------------------------- 予定名の時間の読み取り
-// 予定名の先頭が時刻で、すぐ後ろに「-」「－」「〜」「~」が続くときだけ時間として読む。
+// 予定名の先頭が時刻のとき、次のどれかなら時間として読む。
+// ・時刻のすぐ後ろに「-」「－」「〜」「~」が続く（例：19-、10-15）。終わりの時刻も読む
+// ・予定名が時刻だけ（例：19、1930）か、時刻のすぐ後ろが空白（例：19 飲み）
+// ・時刻を「:」か「時」で書いた（例：13:00spi、15時半歯医者）。ただし「1時間」「2時限」は読まない
+// 「2次試験」「1組」のように、数字のすぐ後ろに文字が続くものは読まない。
+// iPhoneの日本語のキーボードでは「-」が長音の「ー」になるので、「ー」「ｰ」と、ほかの横棒（−‐‑–—―）も同じに扱う。
 // 返す値：{ start, end, len }。start・end は0時からの分（end はなければ null）、len は時間として読んだ部分の文字数。
 // 時間として読まないときは null。
-const SEP = '-－〜~～';
+const SEP = '-－〜~～ーｰ−‐‑–—―';
 const toHalf = (s) => s.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).replace(/：/g, ':');
 
-// s の先頭から時刻を1つ読む。{ min, len } または null
+// s の先頭から時刻を1つ読む。{ min, len, marked } または null。marked：「:」か「時」で書いた時刻
 function readClock(s) {
   let m = /^(\d{1,2}):(\d{2})/.exec(s);
-  if (m) return clock(Number(m[1]), Number(m[2]), m[0].length);
-  m = /^(\d{1,2})時(?:(\d{1,2})分)?/.exec(s);
-  if (m) return clock(Number(m[1]), Number(m[2] || 0), m[0].length);
+  if (m) return clock(Number(m[1]), Number(m[2]), m[0].length, true);
+  m = /^(\d{1,2})時(?:(\d{1,2})分|(半))?/.exec(s);
+  if (m) {
+    if (!m[2] && !m[3] && /^[間限]/.test(s.slice(m[0].length))) return null; // 1時間・2時限
+    return clock(Number(m[1]), m[3] ? 30 : Number(m[2] || 0), m[0].length, true);
+  }
   m = /^\d+/.exec(s);
   if (!m || m[0].length > 4) return null;
   const n = m[0];
   return n.length <= 2 ? clock(Number(n), 0, n.length) : clock(Number(n.slice(0, -2)), Number(n.slice(-2)), n.length);
 }
-const clock = (h, mi, len) => (h <= 29 && mi < 60 ? { min: h * 60 + mi, len } : null);
+const clock = (h, mi, len, marked = false) => (h <= 29 && mi < 60 ? { min: h * 60 + mi, len, marked } : null);
 
 export function parseTime(title) {
   const s = toHalf(String(title || ''));
   const a = readClock(s);
-  if (!a || !SEP.includes(s[a.len] || '\0')) return null;
+  if (!a) return null;
+  const next = s[a.len];
+  // 区切りがないとき：予定名が時刻だけ・時刻のあとが空白・「:」「時」で書いた時刻なら、開始時刻だけ読む
+  if (next === undefined || next === ' ' || next === '　' || (a.marked && !SEP.includes(next))) return { start: a.min, end: null, len: a.len };
+  if (!SEP.includes(next)) return null;
   let len = a.len + 1;
   const rest = s.slice(len);
   let end = null;

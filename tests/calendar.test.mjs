@@ -34,7 +34,7 @@ test('時刻の書き方のいろいろと、時間として読まないもの',
   assert.deepEqual(C.parseTime('19時30分〜21時 会議'), { start: T(19, 30), end: T(21), len: 10 });
   assert.equal(C.parseTime('25-27 夜行バス').start, T(25));
   assert.equal(C.parseTime('１９－２２ 全角').start, T(19)); // 全角の数字と記号
-  assert.equal(C.parseTime('19 飲み会'), null); // 区切りがない
+  assert.deepEqual(C.parseTime('19 飲み会'), { start: T(19), end: null, len: 2 }); // 時刻のあとが空白
   assert.equal(C.parseTime('960-'), null); // 分が60以上
   assert.equal(C.parseTime('30-'), null); // 30時はない
   assert.equal(C.parseTime('12345-'), null);
@@ -401,4 +401,51 @@ test('カレンダーに出す家計簿の記録は支出だけ（収入・振�
   assert.equal(is(L.buildSimpleLines('income', { acc: 'job1', to: 'bank' }, 5000)), false);
   assert.equal(is(L.buildSimpleLines('transfer', { from: 'bank', to: 'cash' }, 1000)), false);
   assert.equal(is([{ side: 'dr', acc: 'adv', amount: 3000 }, { side: 'cr', acc: 'card', amount: 3000 }]), false); // 全額が立替
+});
+
+test('iPhoneの日本語のキーボードの「ー」などの横棒も、時間の区切りとして読む', () => {
+  for (const [title, start, end] of [['19ー', T(19), null], ['19ー飲み', T(19), null], ['１９ー２２ 飲み', T(19), T(22)], ['930ｰバイト', T(9, 30), null], ['10−15', T(10), T(15)], ['13‐面接', T(13), null], ['19:30―', T(19, 30), null]]) {
+    const t = C.parseTime(title);
+    assert.ok(t, title);
+    assert.equal(t.start, start, title);
+    assert.equal(t.end, end, title);
+  }
+  assert.equal(C.parseTime('1ー2限 統計'), null); // 大学の時限
+  assert.deepEqual(C.splitTitle('19ー飲み'), ['19ー', '飲み']);
+});
+
+test('予定名の時間を変えて保存し直すと、その日の時刻の順の位置に入れ直せる', () => {
+  const cal = cal0();
+  const d = '2026-04-01';
+  const add = (title) => C.addEvent(cal, C.newEvent({ title, date: d }));
+  add('10-授業');
+  const e = add('飲み'); // 時間なし → いちばん下
+  add('20-バイト');
+  assert.deepEqual(C.eventsOn(cal, d).map((x) => x.title), ['10-授業', '飲み', '20-バイト']); // 時間のない予定は、足したときのいちばん下
+  e.title = '19ー飲み';
+  C.placeEvent(cal, e);
+  assert.deepEqual(C.eventsOn(cal, d).map((x) => x.title), ['10-授業', '19ー飲み', '20-バイト']);
+});
+
+test('区切りのない時間：時刻だけ・時刻のあとが空白・「:」「時」で書いた時刻は読み、数字のあとに文字が続くものは読まない', () => {
+  const ok = [
+    ['19', T(19), 2], ['1930', T(19, 30), 4], ['19:30', T(19, 30), 5], ['１９', T(19), 2],
+    ['19 飲み', T(19), 2], ['1930　れいなさん', T(19, 30), 4],
+    ['13:00spi', T(13), 5], ['14時面接kpmg', T(14), 3], ['8時半', T(8, 30), 3], ['15時半歯医者', T(15, 30), 4],
+    ['19時30分飲み', T(19, 30), 6], ['2時w杯', T(2), 2],
+  ];
+  for (const [title, start, len] of ok) {
+    const t = C.parseTime(title);
+    assert.ok(t, title);
+    assert.equal(t.start, start, title);
+    assert.equal(t.end, null, title);
+    assert.equal(t.len, len, title);
+  }
+  for (const title of ['2次試験', '1組', '4Q', '18きっぷ', '2年歓迎会', '10発表練習', '1030サブゼミ', '1時間勉強', '2時限', '24時間営業', '1-2限 統計', '960', '30 飲み']) {
+    assert.equal(C.parseTime(title), null, title);
+  }
+  // 区切りがあるときは、今までどおり終わりの時刻も読む
+  assert.deepEqual(C.parseTime('8時半〜10時 授業'), { start: T(8, 30), end: T(10), len: 7 });
+  assert.deepEqual(C.splitTitle('15時半歯医者'), ['15時半', '歯医者']);
+  assert.deepEqual(C.splitTitle('19 飲み'), ['19', ' 飲み']);
 });
