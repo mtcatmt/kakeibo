@@ -169,6 +169,8 @@ p { margin: 6px 0; }
    見た目の指定を外して、幅を欄に合わせる。日付は左に寄せる */
 .field input[type="date"] { -webkit-appearance: none; appearance: none; display: block; min-width: 0; max-width: 100%; text-align: left; }
 .field input[type="date"]::-webkit-date-and-time-value { text-align: left; }
+/* まだ決めていない終了日：次の日を入れてあるが、文字は見せない（app.js の eventForm） */
+.field input[type="date"].unset, .field input[type="date"].unset::-webkit-date-and-time-value { color: transparent; -webkit-text-fill-color: transparent; }
 .field.inline select { width: auto; display: inline-block; margin: 0 4px; padding: 4px 8px; min-height: 0; font-size: 16px; } /* 16px より小さいと、iPhoneはタップしたときに拡大する */
 .field.inline { margin-top: 12px; font-size: 14px; color: var(--text-2); }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }

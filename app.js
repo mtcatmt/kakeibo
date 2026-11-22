@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.20.3';
+const APP_VERSION = '1.20.4';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -1691,7 +1691,7 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
       <div class="chips" id="ev-cats">${cats.map((c) => `<button type="button" class="chip${c.id === e.cat ? ' on' : ''}" data-cat="${c.id}"><span class="sw" style="background:${catColor(c)}"></span>${esc(c.name)}</button>`).join('')}<button type="button" class="chip chip-add" id="ev-cat-add">＋ 追加</button></div>
       <div class="row2">
         <label class="field"><span class="field-label">日付</span><input type="date" name="date" value="${e.date}" required></label>
-        <label class="field"><span class="field-label with-act">終了日（任意）<button type="button" class="link" id="ev-end-clear"${e.end ? '' : ' hidden'}>消す</button></span><input type="date" name="end" value="${e.end || ''}"></label>
+        <label class="field"><span class="field-label with-act">終了日（任意）<button type="button" class="link" id="ev-end-clear"${e.end ? '' : ' hidden'}>消す</button></span><input type="date" name="end" value="${e.end || (C.isDate(e.date) ? C.addDays(e.date, 1) : '')}"${e.end ? '' : ' class="unset"'}></label>
       </div>
       <label class="field"><span class="field-label">メモ</span><textarea name="memo" rows="3" placeholder="任意">${esc(e.memo)}</textarea></label>
       ${isNew ? `<div class="row2">
@@ -1710,34 +1710,43 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
   $('#sheet-body').scrollTop = 0;
   const form = $('#ev-form');
   const f = form.elements;
-  // 終了日：空のときは、その日だけの予定。空の欄をタップしたら次の日を入れ、iPhoneの選ぶ画面がその日から開くようにする。
-  // ほかの日を選ばずに閉じても次の日のまま（2日間の予定）。要らなければ見出しの「消す」で空に戻す。
-  // タップの途中でほかの部分の見た目が変わると、iPhoneはそのタップを選ぶ画面を開くのに使わない（もう一度タップが要る）。
-  // そのため、タップのときは値を入れるだけにし、「消す」は選ぶ画面を閉じたとき（blur）や日を選んだときに出す
+  // 終了日：まだ決めていない（endSet が false）ときは、その日だけの予定。
+  // 欄には初めから次の日を入れておき、文字だけ見えなくする（.unset）。タップしたときに何も変えずに、iPhoneの選ぶ画面が次の日を選んだ状態で開く
+  // （タップの途中で見た目が変わると、iPhoneはそのタップで選ぶ画面を開かなかったり、遅れて見えたりするため）。
+  // 日を選ぶか、選ばずに閉じたら、その日に決める（選ばずに閉じたら次の日＝2日間の予定）。要らなければ見出しの「消す」で、決めていない状態に戻す
   const endClear = $('#ev-end-clear');
-  const showEndClear = () => (endClear.hidden = !f.end.value);
-  let prefilled = null;
-  const prefillEnd = () => {
-    if (f.end.value || !C.isDate(f.date.value)) return;
-    f.end.value = prefilled = C.addDays(f.date.value, 1);
+  let endSet = !!e.end;
+  const nextDay = () => (C.isDate(f.date.value) ? C.addDays(f.date.value, 1) : '');
+  const setEnd = (on) => {
+    endSet = on;
+    if (!on || !f.end.value) {
+      endSet = false;
+      f.end.value = nextDay(); // iPhoneの選ぶ画面の「消去」で空になったときも、次の日を選んだ状態に戻す
+    }
+    f.end.classList.toggle('unset', !endSet);
+    endClear.hidden = !endSet;
   };
-  f.end.addEventListener('pointerdown', prefillEnd);
-  f.end.addEventListener('focus', prefillEnd);
-  f.end.addEventListener('blur', showEndClear);
-  // 欄の上から画面をスクロールしただけのときは、入れた次の日を取り消す（2日間の予定にしない）
-  f.end.addEventListener('pointercancel', () => {
-    if (f.end.value === prefilled && document.activeElement !== f.end) f.end.value = '';
-    showEndClear();
-  });
-  f.end.addEventListener('input', showEndClear);
-  f.end.addEventListener('change', showEndClear);
-  endClear.addEventListener('click', () => {
-    f.end.value = '';
-    showEndClear();
-  });
+  // 選ぶ画面の「消去」を押したら、決めていない状態に戻し、そのあと閉じても次の日に決めない
+  let cleared = false;
+  const onPick = () => {
+    if (!f.end.value) {
+      cleared = true;
+      return setEnd(false);
+    }
+    if (cleared && !endSet && f.end.value === nextDay()) return; // 「消去」のあと、こちらで戻した次の日（続く change）
+    cleared = false;
+    setEnd(true);
+  };
+  f.end.addEventListener('focus', () => (cleared = false)); // 値は変えない（タップの途中で見た目を変えないため）
+  f.end.addEventListener('input', onPick);
+  f.end.addEventListener('change', onPick);
+  f.end.addEventListener('blur', () => !cleared && setEnd(true));
+  // 日付を変えたら、まだ決めていない終了日も、その次の日に合わせる
+  f.date.addEventListener('input', () => !endSet && setEnd(false));
+  endClear.addEventListener('click', () => setEnd(false));
   // 種類の「＋ 追加」：入力途中の値をとっておき、追加したらその種類を選んだ状態で開き直す
   $('#ev-cat-add').addEventListener('click', () => {
-    const vals = { title: f.title.value, cat: f.cat.value, date: f.date.value, end: f.end.value || null, memo: f.memo.value, part: !!f.part.value, spanTouched };
+    const vals = { title: f.title.value, cat: f.cat.value, date: f.date.value, end: endSet ? f.end.value || null : null, memo: f.memo.value, part: !!f.part.value, spanTouched };
     if (isNew) Object.assign(vals, { rep: f.rep.value, count: f.count.value, bizN: f.bizN.value });
     catAddSheet({
       onDone: (c) => eventForm(ev, { back, draft: { ...vals, cat: c.id } }),
@@ -1803,7 +1812,7 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
     x.preventDefault();
     const title = f.title.value.trim();
     const d = f.date.value;
-    const end = f.end.value || null;
+    const end = endSet ? f.end.value || null : null; // 決めていない終了日（見えない次の日）は「終了日なし」
     if (!title) return toast('予定名を入力してください');
     if (!C.isDate(d)) return toast('日付を入力してください');
     if (end && end < d) return toast('終了日が日付より前になっています');
