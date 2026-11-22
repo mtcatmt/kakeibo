@@ -150,6 +150,8 @@ p { margin: 6px 0; }
 .calc-keys .op { color: var(--accent); }
 .calc-keys .ok { grid-column: span 2; background: var(--accent); color: var(--accent-text); font-size: 17px; font-weight: 600; }
 .field-label { display: block; font-size: 13px; color: var(--text-2); margin: 10px 0 6px; }
+.field-label.with-act { display: flex; justify-content: space-between; align-items: center; }
+.field-label .link { padding: 0 2px; font-size: 13px; } /* 見出しの高さを、となりの欄の見出しとそろえる */
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip {
   display: inline-flex; align-items: center; gap: 6px;

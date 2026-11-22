@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.20.1';
+const APP_VERSION = '1.20.2';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -1691,7 +1691,7 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
       <div class="chips" id="ev-cats">${cats.map((c) => `<button type="button" class="chip${c.id === e.cat ? ' on' : ''}" data-cat="${c.id}"><span class="sw" style="background:${catColor(c)}"></span>${esc(c.name)}</button>`).join('')}<button type="button" class="chip chip-add" id="ev-cat-add">＋ 追加</button></div>
       <div class="row2">
         <label class="field"><span class="field-label">日付</span><input type="date" name="date" value="${e.date}" required></label>
-        <label class="field"><span class="field-label">終了日（任意）</span><input type="date" name="end" value="${e.end || ''}"></label>
+        <label class="field"><span class="field-label with-act">終了日（任意）<button type="button" class="link" id="ev-end-clear"${e.end ? '' : ' hidden'}>消す</button></span><input type="date" name="end" value="${e.end || ''}"></label>
       </div>
       <label class="field"><span class="field-label">メモ</span><textarea name="memo" rows="3" placeholder="任意">${esc(e.memo)}</textarea></label>
       ${isNew ? `<div class="row2">
@@ -1710,18 +1710,29 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
   $('#sheet-body').scrollTop = 0;
   const form = $('#ev-form');
   const f = form.elements;
-  // 終了日：空の欄をタップしたら、いったん日付と同じ日を入れ、iPhoneの選ぶ画面が今月ではなくその月から開くようにする。
-  // 日付と同じ終了日は「終了日なし」と同じ（保存のときに null にする）ので、ほかの日を選ばずに閉じたら空に戻す
+  // 終了日：空のときは、その日だけの予定。空の欄をタップしたら次の日を入れ、iPhoneの選ぶ画面がその日から開くようにする。
+  // ほかの日を選ばずに閉じても次の日のまま（2日間の予定）。要らなければ見出しの「消す」で空に戻す
+  const endClear = $('#ev-end-clear');
+  const showEndClear = () => (endClear.hidden = !f.end.value);
+  let prefilled = null;
   const prefillEnd = () => {
-    if (!f.end.value && C.isDate(f.date.value)) f.end.value = f.date.value;
-  };
-  const unfillEnd = () => {
-    if (f.end.value === f.date.value && document.activeElement !== f.end) f.end.value = '';
+    if (f.end.value || !C.isDate(f.date.value)) return;
+    f.end.value = prefilled = C.addDays(f.date.value, 1);
+    showEndClear();
   };
   f.end.addEventListener('pointerdown', prefillEnd);
   f.end.addEventListener('focus', prefillEnd);
-  f.end.addEventListener('pointercancel', unfillEnd); // 欄の上から画面をスクロールしたとき
-  f.end.addEventListener('blur', unfillEnd);
+  // 欄の上から画面をスクロールしただけのときは、入れた次の日を取り消す（2日間の予定にしない）
+  f.end.addEventListener('pointercancel', () => {
+    if (f.end.value === prefilled && document.activeElement !== f.end) f.end.value = '';
+    showEndClear();
+  });
+  f.end.addEventListener('input', showEndClear);
+  f.end.addEventListener('change', showEndClear);
+  endClear.addEventListener('click', () => {
+    f.end.value = '';
+    showEndClear();
+  });
   // 種類の「＋ 追加」：入力途中の値をとっておき、追加したらその種類を選んだ状態で開き直す
   $('#ev-cat-add').addEventListener('click', () => {
     const vals = { title: f.title.value, cat: f.cat.value, date: f.date.value, end: f.end.value || null, memo: f.memo.value, part: !!f.part.value, spanTouched };
