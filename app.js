@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.20.0';
+const APP_VERSION = '1.20.1';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -1710,6 +1710,18 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
   $('#sheet-body').scrollTop = 0;
   const form = $('#ev-form');
   const f = form.elements;
+  // 終了日：空の欄をタップしたら、いったん日付と同じ日を入れ、iPhoneの選ぶ画面が今月ではなくその月から開くようにする。
+  // 日付と同じ終了日は「終了日なし」と同じ（保存のときに null にする）ので、ほかの日を選ばずに閉じたら空に戻す
+  const prefillEnd = () => {
+    if (!f.end.value && C.isDate(f.date.value)) f.end.value = f.date.value;
+  };
+  const unfillEnd = () => {
+    if (f.end.value === f.date.value && document.activeElement !== f.end) f.end.value = '';
+  };
+  f.end.addEventListener('pointerdown', prefillEnd);
+  f.end.addEventListener('focus', prefillEnd);
+  f.end.addEventListener('pointercancel', unfillEnd); // 欄の上から画面をスクロールしたとき
+  f.end.addEventListener('blur', unfillEnd);
   // 種類の「＋ 追加」：入力途中の値をとっておき、追加したらその種類を選んだ状態で開き直す
   $('#ev-cat-add').addEventListener('click', () => {
     const vals = { title: f.title.value, cat: f.cat.value, date: f.date.value, end: f.end.value || null, memo: f.memo.value, part: !!f.part.value, spanTouched };
