@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.19.1';
+const APP_VERSION = '1.20.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -1456,7 +1456,10 @@ function calBody() {
       </div>
       ${weekList(c.week)}`;
   }
-  return `<div class="cal-bar">${seg}<span class="cal-label" id="mlabel">${monthLabel(c.month)}</span><button type="button" class="chip" data-act="cal-today">今日</button></div>
+  // 見出しの年月の上に、透明な年月の入力欄を重ねる。タップすると、iPhoneの年と月を回して選ぶ画面が出る
+  const pick = `<label class="cal-label cal-pick"><span id="mlabel">${monthLabel(c.month)}</span><span class="cal-caret" aria-hidden="true">▾</span>
+      <input type="month" id="mpick" data-cal="month" value="${c.month}" aria-label="表示する年月を選ぶ"></label>`;
+  return `<div class="cal-bar">${seg}${pick}<button type="button" class="chip" data-act="cal-today">今日</button></div>
     <div class="mhead">${[...'日月火水木金土'].map((w, i) => `<span class="${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</span>`).join('')}</div>
     <div class="mlist" id="mlist">${monthRange().map(monthBlock).join('')}</div>`;
 }
@@ -1576,6 +1579,23 @@ function scrollToMonth(ym) {
   ui.cal.scrollTop = list.scrollTop;
 }
 
+// 見出しで選んだ年月へ飛ぶ。見出しごと作り直すと、選んでいる途中の入力欄が消えて選ぶ画面が閉じるので、月の欄の中身だけを作り直す
+function jumpToMonth(ym) {
+  if (!/^\d{4}-\d{2}$/.test(ym || '')) {
+    // 選ぶ画面の「消去」で空になったとき：飛ばずに、今見ている月に戻す
+    const pk = $('#mpick');
+    if (pk) pk.value = ui.cal.month;
+    return;
+  }
+  const c = ui.cal;
+  const list = $('#mlist');
+  c.month = ym;
+  if (!list) return;
+  if (!c.range || ym < c.range.from || ym > c.range.to) list.innerHTML = monthRange().map(monthBlock).join(''); // monthRange() が範囲を ym の前後に作り直す
+  scrollToMonth(ym);
+  $('#mlabel').textContent = monthLabel(ym);
+}
+
 function onMonthScroll(list) {
   const c = ui.cal;
   // 上下の端に近づいたら月を足す。上に足したときは、見ている位置がずれないように戻す
@@ -1606,6 +1626,8 @@ function onMonthScroll(list) {
     c.month = cur.dataset.ym;
     const lb = $('#mlabel');
     if (lb) lb.textContent = monthLabel(c.month);
+    const pk = $('#mpick'); // 次にタップしたとき、今見ている月から回せるように
+    if (pk) pk.value = c.month;
   }
 }
 
@@ -2514,6 +2536,8 @@ document.addEventListener('input', (ev) => {
   } else if (t.dataset.cal === 'q') {
     ui.cal.q = t.value;
     renderCalBody();
+  } else if (t.dataset.cal === 'month') {
+    jumpToMonth(t.value);
   } else if (t.dataset.field && ui.tab === 'input') {
     ui.draft[t.dataset.field] = t.value;
     if (t.dataset.field === 'date') renderEventPicker(); // 日付を変えたら、並ぶ予定もその日のものにする
@@ -2527,7 +2551,9 @@ document.addEventListener('input', (ev) => {
 
 document.addEventListener('change', async (ev) => {
   const t = ev.target;
-  if (t.dataset.jfield) {
+  if (t.dataset.cal === 'month') {
+    jumpToMonth(t.value); // 回している途中に input が出ない場合も、決めたときに飛ぶ
+  } else if (t.dataset.jfield) {
     const i = Number(t.closest('.jrow').dataset.i);
     ui.draft.lines[i][t.dataset.jfield] = t.value;
     updatePreview();

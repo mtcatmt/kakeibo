@@ -370,6 +370,14 @@ body.locked { overflow: hidden; }
 .cal-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .cal-bar .seg { flex: 0 0 116px; margin: 0; }
 .cal-label { flex: 1; min-width: 0; font-size: 18px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 見出しの年月：透明な年月の入力欄を重ね、タップで年と月を回して選ぶ画面を出す */
+.cal-pick { position: relative; display: flex; align-items: center; gap: 4px; }
+.cal-pick #mlabel { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-caret { flex: none; font-size: 12px; color: var(--text-2); }
+.cal-pick input {
+  position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; border: 0; padding: 0; margin: 0;
+  font-size: 16px; -webkit-appearance: none; appearance: none; /* 16px：iPhoneがタップしたときに拡大しないため */
+}
 .cal-bar .chip { flex: none; padding: 5px 14px; }
 .sun { color: var(--bad-text); }
 .sat { color: var(--accent); }
