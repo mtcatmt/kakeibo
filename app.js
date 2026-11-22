@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.20.2';
+const APP_VERSION = '1.20.3';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -1711,17 +1711,19 @@ function eventForm(ev, { date = today(), back = '', draft = null } = {}) {
   const form = $('#ev-form');
   const f = form.elements;
   // 終了日：空のときは、その日だけの予定。空の欄をタップしたら次の日を入れ、iPhoneの選ぶ画面がその日から開くようにする。
-  // ほかの日を選ばずに閉じても次の日のまま（2日間の予定）。要らなければ見出しの「消す」で空に戻す
+  // ほかの日を選ばずに閉じても次の日のまま（2日間の予定）。要らなければ見出しの「消す」で空に戻す。
+  // タップの途中でほかの部分の見た目が変わると、iPhoneはそのタップを選ぶ画面を開くのに使わない（もう一度タップが要る）。
+  // そのため、タップのときは値を入れるだけにし、「消す」は選ぶ画面を閉じたとき（blur）や日を選んだときに出す
   const endClear = $('#ev-end-clear');
   const showEndClear = () => (endClear.hidden = !f.end.value);
   let prefilled = null;
   const prefillEnd = () => {
     if (f.end.value || !C.isDate(f.date.value)) return;
     f.end.value = prefilled = C.addDays(f.date.value, 1);
-    showEndClear();
   };
   f.end.addEventListener('pointerdown', prefillEnd);
   f.end.addEventListener('focus', prefillEnd);
+  f.end.addEventListener('blur', showEndClear);
   // 欄の上から画面をスクロールしただけのときは、入れた次の日を取り消す（2日間の予定にしない）
   f.end.addEventListener('pointercancel', () => {
     if (f.end.value === prefilled && document.activeElement !== f.end) f.end.value = '';
