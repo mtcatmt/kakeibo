@@ -2,7 +2,7 @@ import * as L from './ledger.js';
 import * as C from './calendar.js';
 import { columnChart, lineChart, yen } from './charts.js';
 
-const APP_VERSION = '1.20.4';
+const APP_VERSION = '1.21.0';
 const DEMO = new URLSearchParams(location.search).has('demo');
 
 // ---------------------------------------------------------------- 状態
@@ -480,6 +480,7 @@ async function saveEntry() {
       if (same) evId = same.id;
       else {
         newEv = C.newEvent({ title, date: d.date, cat: newEventCat(r.lines), src: 'ledger' });
+        C.setTimed(newEv, true); // 家計簿から作る予定は、予定名に時間がなくても一日の一部の予定にする
         evId = newEv.id;
       }
     } else if (d.eventId && state.calendar.events.some((x) => x.id === d.eventId && C.occursOn(x, d.date))) evId = d.eventId;
